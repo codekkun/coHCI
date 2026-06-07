@@ -19,19 +19,19 @@ const AudioEngine = (() => {
     const BGM_LIBRARY = {
         menu: [
             "assets/sounds/bgm/menu/menu-01.mp3",
-
+            "assets/sounds/bgm/menu/menu-02.mp3",
         ],
         classic: [
             "assets/sounds/bgm/classic/classic-01.mp3",
-  
+            "assets/sounds/bgm/classic/classic-02.mp3",
         ],
         zen: [
             "assets/sounds/bgm/zen/zen-01.mp3",
-
+            "assets/sounds/bgm/zen/zen-02.mp3",
         ],
         arcade: [
             "assets/sounds/bgm/arcade/arcade-01.mp3",
-
+            "assets/sounds/bgm/arcade/arcade-02.mp3",
         ],
     };
 

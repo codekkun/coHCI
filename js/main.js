@@ -12,8 +12,9 @@ const ui = {
 
 const GAME = {
     MENU: 0,
-    PLAYING: 1,
-    GAMEOVER: 2,
+    SETTINGS: 1,
+    PLAYING: 2,
+    GAMEOVER: 3,
 };
 
 const MODES = {
@@ -28,6 +29,14 @@ const menuItems = [
     { text: "经典模式", mode: MODES.classic, x: W / 2, y: 220, color: "#7ef7c5" },
     { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 320, color: "#6db8ff" },
     { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 420, color: "#dba4ff" },
+    { text: "设置", mode: "settings", x: W / 2, y: 520, color: "#ffd166" },
+];
+
+const settingsItems = [
+    { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 220, color: "#7ef7c5" },
+    { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 320, color: "#6db8ff" },
+    { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 420, color: "#ffd166" },
+    { action: "back", text: () => "返回菜单", x: W / 2, y: 520, color: "#dba4ff" },
 ];
 
 const gameoverItems = [
@@ -45,8 +54,9 @@ let particles = [];
 let slices = [];
 let splats = [];
 let trail = [];
-let menuHold = [0, 0, 0];
+let menuHold = [0, 0, 0, 0];
 let gameoverHold = [0, 0];
+let playExitHold = 0;
 let mouseX = W / 2;
 let mouseY = H / 2;
 let mouseMovedRecently = false;
@@ -55,6 +65,10 @@ let pointerX = mouseX;
 let pointerY = mouseY;
 let lastInputWasHand = false;
 let usingMouse = false;
+let settingsHold = [0, 0, 0, 0];
+let settingsSliderDragging = false;
+let settingsSliderDragSource = null;
+let settingsLatchedIndex = -1;
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -62,6 +76,51 @@ function clamp(value, min, max) {
 
 function distance(ax, ay, bx, by) {
     return Math.hypot(ax - bx, ay - by);
+}
+
+function getSettingsState() {
+    if (!window.settings) {
+        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true };
+    }
+    return window.settings;
+}
+
+function applySettingsState() {
+    const settings = getSettingsState();
+    if (window.setMuted) {
+        window.setMuted(!!settings.muted);
+    }
+    if (window.setCameraPreviewVisible) {
+        window.setCameraPreviewVisible(!!settings.showCameraPreview);
+    }
+}
+
+function saveSettings() {
+    const settings = getSettingsState();
+    localStorage.setItem("cohci_settings", JSON.stringify(settings));
+}
+
+function changeSensitivity(delta) {
+    const settings = getSettingsState();
+    settings.sensitivity = clamp(Math.round(((Number(settings.sensitivity) || 1.0) + delta) * 20) / 20, 0.6, 1.6);
+    saveSettings();
+}
+
+function setSensitivityFromSliderX(x) {
+    const left = W / 2 - 180;
+    const right = W / 2 + 180;
+    const ratio = clamp((x - left) / (right - left), 0, 1);
+    const value = 0.6 + ratio * (1.6 - 0.6);
+    const settings = getSettingsState();
+    settings.sensitivity = Math.round(value * 20) / 20;
+    saveSettings();
+}
+
+function toggleSetting(key) {
+    const settings = getSettingsState();
+    settings[key] = !settings[key];
+    applySettingsState();
+    saveSettings();
 }
 
 function drawText(text, x, y, size = 48, color = "#ffffff", align = "center") {
@@ -168,7 +227,7 @@ class Fruit {
     constructor(mode) {
         const pool = mode === MODES.zen
             ? ["apple", "orange", "banana", "watermelon"]
-            : ["apple", "orange", "banana", "watermelon", "bomb"];
+            : ["apple", "apple", "orange", "orange", "banana", "banana", "watermelon", "watermelon", "apple", "orange", "banana", "watermelon", "bomb"];
 
         this.type = pool[Math.floor(Math.random() * pool.length)];
         this.r = this.type === "bomb" ? 40 : 38;
@@ -387,8 +446,9 @@ function resetGame(mode) {
     slices = [];
     splats = [];
     trail = [];
-    menuHold = [0, 0, 0];
+    menuHold = [0, 0, 0, 0];
     gameoverHold = [0, 0];
+    playExitHold = 0;
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -402,9 +462,7 @@ function resetGame(mode) {
     if (window.playSound) {
         window.playSound("start");
     }
-    if (window.playBgm) {
-        window.playBgm(mode === MODES.classic ? "classic" : mode === MODES.zen ? "zen" : "arcade");
-    }
+    syncBgmForScene();
 }
 
 function returnToMenu() {
@@ -414,12 +472,29 @@ function returnToMenu() {
     slices = [];
     splats = [];
     trail = [];
-    menuHold = [0, 0, 0];
+    menuHold = [0, 0, 0, 0];
     gameoverHold = [0, 0];
+    playExitHold = 0;
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
     }
-    if (window.playBgm) {
+    syncBgmForScene();
+}
+
+function syncBgmForScene() {
+    if (!window.playBgm) {
+        return;
+    }
+    if (window.settings && window.settings.muted) {
+        if (window.stopBgm) {
+            window.stopBgm();
+        }
+        return;
+    }
+
+    if (gameState === GAME.PLAYING) {
+        window.playBgm(chosenMode === MODES.classic ? "classic" : chosenMode === MODES.zen ? "zen" : "arcade");
+    } else {
         window.playBgm("menu");
     }
 }
@@ -496,7 +571,16 @@ function updateMenu(delta, input) {
     drawText("挥动或移动光标到按钮上，停留片刻即可开始", W / 2, 132, 24, "rgba(255,255,255,0.78)");
 
     let trigger = null;
-    const hoveredIndex = getHoveredIndex(menuItems, input.x, input.y, 120);
+    let hoveredIndex = -1;
+    let hoveredDistance = Infinity;
+    menuItems.forEach((item, index) => {
+        const hitRadius = item.mode === "settings" ? 160 : 120;
+        const dist = distance(input.x, input.y, item.x, item.y);
+        if (dist <= hitRadius && dist < hoveredDistance) {
+            hoveredDistance = dist;
+            hoveredIndex = index;
+        }
+    });
     menuItems.forEach((item, index) => {
         const hovered = index === hoveredIndex;
         if (hovered) {
@@ -515,11 +599,172 @@ function updateMenu(delta, input) {
     });
 
     if (trigger) {
-        resetGame(trigger.mode);
+        if (trigger.mode === "settings") {
+            gameState = GAME.SETTINGS;
+            settingsHold = [0, 0, 0, 0];
+            settingsSliderDragging = false;
+            settingsSliderDragSource = null;
+            settingsLatchedIndex = -1;
+        } else {
+            resetGame(trigger.mode);
+        }
+    }
+}
+
+function updateSettings(delta, input) {
+    drawText("Settings", W / 2, 90, 58, "#ffffff");
+    drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, "rgba(255,255,255,0.78)");
+    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  攥拳时才使用灵敏度加成`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
+
+    const hoveredIndex = getHoveredIndex(settingsItems, input.x, input.y, 130);
+    let trigger = null;
+
+    if (hoveredIndex !== settingsLatchedIndex) {
+        settingsLatchedIndex = -1;
+    }
+
+    settingsItems.forEach((item, index) => {
+        const hovered = index === hoveredIndex;
+        const label = item.text();
+        if (index === 2) {
+            const sliderLeft = W / 2 - 180;
+            const sliderRight = W / 2 + 180;
+            const sliderTop = item.y - 10;
+            const sliderBottom = item.y + 10;
+            const sliderHovered = input.x >= sliderLeft && input.x <= sliderRight && input.y >= sliderTop - 26 && input.y <= sliderBottom + 26;
+
+            if (sliderHovered && input.fist) {
+                settingsSliderDragging = true;
+                settingsSliderDragSource = "hand";
+            }
+
+            if (settingsSliderDragging || sliderHovered) {
+                drawRoundedRect(sliderLeft - 20, item.y - 36, 400, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+                drawText(label, item.x, item.y - 20, 34, hovered ? item.color : "#ffffff");
+
+                ctx.save();
+                ctx.strokeStyle = "rgba(255,255,255,0.35)";
+                ctx.lineWidth = 8;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, item.y + 6);
+                ctx.lineTo(sliderRight, item.y + 6);
+                ctx.stroke();
+
+                const value = (getSettingsState().sensitivity || 1.0);
+                const handleX = sliderLeft + ((value - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, item.y + 6);
+                ctx.lineTo(handleX, item.y + 6);
+                ctx.stroke();
+
+                ctx.fillStyle = item.color;
+                ctx.beginPath();
+                ctx.arc(handleX, item.y + 6, 14, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                if (settingsSliderDragging) {
+                    setSensitivityFromSliderX(input.x);
+                }
+
+                if (settingsSliderDragSource === "hand" && !input.fist) {
+                    settingsSliderDragging = false;
+                    settingsSliderDragSource = null;
+                }
+
+                if (settingsSliderDragging) {
+                    trigger = null;
+                }
+            } else {
+                drawRoundedRect(sliderLeft - 20, item.y - 36, 400, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+                drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
+                drawText(`${(getSettingsState().sensitivity || 1.0).toFixed(2)}`, item.x + 145, item.y - 4, 28, item.color, "right");
+                ctx.save();
+                ctx.strokeStyle = "rgba(255,255,255,0.35)";
+                ctx.lineWidth = 8;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, item.y + 6);
+                ctx.lineTo(sliderRight, item.y + 6);
+                ctx.stroke();
+                const value = (getSettingsState().sensitivity || 1.0);
+                const handleX = sliderLeft + ((value - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, item.y + 6);
+                ctx.lineTo(handleX, item.y + 6);
+                ctx.stroke();
+                ctx.fillStyle = item.color;
+                ctx.beginPath();
+                ctx.arc(handleX, item.y + 6, 14, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        } else {
+            if (hovered && settingsLatchedIndex !== index) {
+                settingsHold[index] = Math.min(REQUIRED_HOLD_MS, settingsHold[index] + delta);
+            } else {
+                settingsHold[index] = Math.max(0, settingsHold[index] - delta * 2);
+            }
+
+            drawRoundedRect(item.x - 180, item.y - 36, 360, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+            drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
+            drawLoadingArc(item.x, item.y + 30, 38, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
+
+            if (settingsHold[index] >= REQUIRED_HOLD_MS) {
+                trigger = item.action;
+            }
+        }
+    });
+
+    if (trigger === "toggleMute") {
+        toggleSetting("muted");
+        syncBgmForScene();
+        settingsLatchedIndex = hoveredIndex;
+        settingsHold = [0, 0, 0, 0];
+    } else if (trigger === "togglePreview") {
+        toggleSetting("showCameraPreview");
+        settingsLatchedIndex = hoveredIndex;
+        settingsHold = [0, 0, 0, 0];
+    } else if (trigger === "back") {
+        returnToMenu();
+        gameState = GAME.MENU;
+    }
+
+    if (hoveredIndex === -1) {
+        settingsLatchedIndex = -1;
+        settingsHold = [0, 0, 0, 0];
+        settingsSliderDragging = false;
+        settingsSliderDragSource = null;
     }
 }
 
 function updatePlaying(delta, input) {
+    const exitLeft = 20;
+    const exitTop = 18;
+    const exitWidth = 120;
+    const exitHeight = 44;
+    const exitHovered = input.x >= exitLeft && input.x <= exitLeft + exitWidth && input.y >= exitTop && input.y <= exitTop + exitHeight;
+
+    if (exitHovered) {
+        playExitHold = Math.min(REQUIRED_HOLD_MS, playExitHold + delta);
+    } else {
+        playExitHold = Math.max(0, playExitHold - delta * 2);
+    }
+
+    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", exitHovered ? "#ffb84d" : "rgba(255,255,255,0.12)");
+    drawText("退出", exitLeft + exitWidth / 2, exitTop + exitHeight / 2 - 1, 24, exitHovered ? "#ffb84d" : "#ffffff");
+    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, playExitHold / REQUIRED_HOLD_MS, "#ffb84d");
+
+    if (playExitHold >= REQUIRED_HOLD_MS) {
+        returnToMenu();
+        return;
+    }
+
     if (chosenMode === MODES.zen || chosenMode === MODES.arcade) {
         remainingTime -= delta / 1000;
         if (remainingTime <= 0) {
@@ -600,11 +845,11 @@ function updatePlaying(delta, input) {
     particles.forEach((particle) => particle.draw());
     splats.forEach((splat) => splat.draw());
 
-    drawText(`Score: ${score}`, 80, 40, 30, "#ffffff", "left");
+    drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     if (chosenMode === MODES.classic) {
-        drawText(`Lives: ${"X".repeat(Math.max(0, lives))}`, W - 120, 40, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
+        drawText(`Lives: ${"X".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
     } else {
-        drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 40, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
+        drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
 }
 
@@ -659,6 +904,8 @@ function loop(timestamp) {
 
     if (gameState === GAME.MENU) {
         updateMenu(delta, input);
+    } else if (gameState === GAME.SETTINGS) {
+        updateSettings(delta, input);
     } else if (gameState === GAME.PLAYING) {
         updatePlaying(delta, input);
     } else if (gameState === GAME.GAMEOVER) {
@@ -667,9 +914,6 @@ function loop(timestamp) {
 
     drawPointer(input);
 
-    if (gameState !== GAME.PLAYING) {
-        drawText("移动到按钮上并停留约 1 秒", W / 2, H - 52, 20, "rgba(255,255,255,0.68)");
-    }
 
     mouseMovedRecently = false;
     window.requestAnimationFrame(loop);
@@ -680,6 +924,17 @@ window.addEventListener("pointermove", (event) => {
     mouseX = ((event.clientX - rect.left) / rect.width) * W;
     mouseY = ((event.clientY - rect.top) / rect.height) * H;
     mouseMovedRecently = true;
+
+    if (gameState === GAME.SETTINGS && settingsSliderDragging) {
+        setSensitivityFromSliderX(mouseX);
+    }
+});
+
+window.addEventListener("pointerup", () => {
+    settingsSliderDragging = false;
+    if (settingsSliderDragSource === "mouse") {
+        settingsSliderDragSource = null;
+    }
 });
 
 // 点击画布直接触发菜单/结算操作（便于鼠标用户）
@@ -689,9 +944,46 @@ canvas.addEventListener("pointerdown", (event) => {
     const y = ((event.clientY - rect.top) / rect.height) * H;
 
     if (gameState === GAME.MENU) {
-        const idx = getHoveredIndex(menuItems, x, y, 120);
+        let idx = -1;
+        let bestDistance = Infinity;
+        menuItems.forEach((item, itemIndex) => {
+            const hitRadius = item.mode === "settings" ? 160 : 120;
+            const dist = distance(x, y, item.x, item.y);
+            if (dist <= hitRadius && dist < bestDistance) {
+                bestDistance = dist;
+                idx = itemIndex;
+            }
+        });
         if (idx !== -1) {
-            resetGame(menuItems[idx].mode);
+            const selected = menuItems[idx];
+            if (selected.mode === "settings") {
+                gameState = GAME.SETTINGS;
+                settingsHold = [0, 0, 0, 0];
+                settingsSliderDragging = false;
+                settingsSliderDragSource = null;
+                settingsLatchedIndex = -1;
+            } else {
+                resetGame(selected.mode);
+            }
+            return;
+        }
+    } else if (gameState === GAME.SETTINGS) {
+        const idx = getHoveredIndex(settingsItems, x, y, 130);
+        if (idx !== -1) {
+            const action = settingsItems[idx].action;
+            if (action === "toggleMute") {
+                toggleSetting("muted");
+                syncBgmForScene();
+            } else if (action === "togglePreview") {
+                toggleSetting("showCameraPreview");
+            } else if (action === "sensitivitySlider") {
+                settingsSliderDragging = true;
+                settingsSliderDragSource = "mouse";
+                setSensitivityFromSliderX(x);
+            } else if (action === "back") {
+                returnToMenu();
+                gameState = GAME.MENU;
+            }
             return;
         }
     } else if (gameState === GAME.GAMEOVER) {
@@ -709,9 +1001,7 @@ window.addEventListener("pointerdown", () => {
     if (window.unlockAudio) {
         window.unlockAudio();
     }
-    if (gameState === GAME.MENU && window.playBgm) {
-        window.playBgm("menu");
-    }
+    syncBgmForScene();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -722,59 +1012,22 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("load", () => {
     drawBackground();
-    if (window.playBgm) {
-        window.playBgm("menu");
-    }
+    syncBgmForScene();
     window.requestAnimationFrame(loop);
 });
 
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = localStorage.getItem("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0 };
+    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
     window.settings = s;
-    // apply muted immediately
-    if (window.setMuted) window.setMuted(!!s.muted);
-}
-
-function saveSettings() {
-    if (!window.settings) window.settings = { muted: false, sensitivity: 1.0 };
-    localStorage.setItem("cohci_settings", JSON.stringify(window.settings));
-}
-
-function bindSettingsUI() {
-    const openBtn = document.getElementById("openSettings");
-    const modal = document.getElementById("settingsModal");
-    const closeBtn = document.getElementById("closeSettings");
-    const saveBtn = document.getElementById("saveSettings");
-    const mutedCheckbox = document.getElementById("mutedCheckbox");
-    const sensitivityRange = document.getElementById("sensitivityRange");
-
-    if (!openBtn || !modal) return;
-
-    function refreshUI() {
-        mutedCheckbox.checked = !!window.settings.muted;
-        sensitivityRange.value = window.settings.sensitivity || 1.0;
-    }
-
-    openBtn.addEventListener("click", () => {
-        modal.setAttribute("aria-hidden", "false");
-        refreshUI();
-    });
-    closeBtn.addEventListener("click", () => modal.setAttribute("aria-hidden", "true"));
-    saveBtn.addEventListener("click", () => {
-        window.settings.muted = !!mutedCheckbox.checked;
-        window.settings.sensitivity = Number(sensitivityRange.value) || 1.0;
-        if (window.setMuted) window.setMuted(window.settings.muted);
-        saveSettings();
-        modal.setAttribute("aria-hidden", "true");
-    });
+    applySettingsState();
+    saveSettings();
 }
 
 window.addEventListener("DOMContentLoaded", () => {
     loadSettings();
-    bindSettingsUI();
 });
