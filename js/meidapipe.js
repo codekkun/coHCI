@@ -3,6 +3,7 @@ window.handY = 300;
 window.isFist = false;
 window.handTracked = false;
 window.cameraReady = false;
+let lostHandFrames = 0;
 
 // 本文件内部使用的 clamp，避免依赖外部脚本作用域
 function clamp(v, a, b) {
@@ -11,6 +12,13 @@ function clamp(v, a, b) {
 
 const videoElement = document.getElementById("video");
 const statusElement = document.getElementById("cameraStatus");
+
+function setCameraPreviewVisible(visible) {
+    if (!videoElement) {
+        return;
+    }
+    videoElement.style.display = visible ? "block" : "none";
+}
 
 function setStatus(text, tone = "neutral") {
     if (!statusElement) {
@@ -31,7 +39,7 @@ function detectFist(landmarks) {
         totalDist += Math.hypot(tip.x - base.x, tip.y - base.y);
     }
 
-    return (totalDist / 5) < 0.15;
+    return (totalDist / 5) < 0.18;
 }
 
 function updateHandState(results) {
@@ -41,10 +49,12 @@ function updateHandState(results) {
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
         const indexTip = landmarks[8];
+        const localIsFist = detectFist(landmarks);
 
         // 增强可达范围并根据设置调整灵敏度
         const margin = 0.05;
-        const sensitivity = (window.settings && window.settings.sensitivity) ? Number(window.settings.sensitivity) : 1.0;
+        const baseSensitivity = (window.settings && window.settings.sensitivity) ? Number(window.settings.sensitivity) : 1.0;
+        const sensitivity = localIsFist ? baseSensitivity : 1.0;
 
         function normCoord(v) {
             const n = (v - margin) / (1 - 2 * margin);
@@ -61,13 +71,17 @@ function updateHandState(results) {
         const nextX = (1 - adjX) * width; // x 镜像
         const nextY = adjY * height;
 
-        window.handX = window.handX * 0.3 + nextX * 0.7;
-        window.handY = window.handY * 0.3 + nextY * 0.7;
-        window.isFist = detectFist(landmarks);
+        window.handX = window.handX * 0.45 + nextX * 0.55;
+        window.handY = window.handY * 0.45 + nextY * 0.55;
+        window.isFist = localIsFist;
         window.handTracked = true;
+        lostHandFrames = 0;
     } else {
-        window.handTracked = false;
-        window.isFist = false;
+        lostHandFrames += 1;
+        if (lostHandFrames > 6) {
+            window.handTracked = false;
+            window.isFist = false;
+        }
     }
 }
 
@@ -111,8 +125,8 @@ async function startCamera() {
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.55,
-            minTrackingConfidence: 0.55,
+            minDetectionConfidence: 0.45,
+            minTrackingConfidence: 0.45,
         });
 
         hands.onResults(updateHandState);
@@ -128,6 +142,7 @@ async function startCamera() {
 
         videoElement.srcObject = stream;
         videoElement.style.transform = "scaleX(-1)";
+        setCameraPreviewVisible(!window.settings || window.settings.showCameraPreview !== false);
         await videoElement.play();
         window.cameraReady = true;
         setStatus("摄像头已连接", "ok");
@@ -144,3 +159,5 @@ async function startCamera() {
 }
 
 window.addEventListener("load", startCamera);
+
+window.setCameraPreviewVisible = setCameraPreviewVisible;
