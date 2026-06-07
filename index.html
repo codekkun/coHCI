@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HCI期末项目：体感水果忍者</title>
+    
+    <link rel="stylesheet" href="css/style.css">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <h1 id="loadingText" style="text-align: center; color: #333; margin-top: 50px;">
+        正在请求摄像头权限并加载手势模型，请稍候...
+    </h1>
+
+    <video class="input_video" style="display: none;"></video>
+    
+    <div style="display: flex; justify-content: center; margin-top: 20px;">
+        <canvas class="output_canvas" width="1280" height="720" style="border: 2px solid #ccc; background-color: #f9f9f9;"></canvas>
+    </div>
+
+    <script src="js/main.js"></script>
+</body>
+</html>
