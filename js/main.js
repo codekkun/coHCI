@@ -68,6 +68,7 @@ let usingMouse = false;
 let settingsHold = [0, 0, 0, 0];
 let settingsSliderDragging = false;
 let settingsSliderDragSource = null;
+let settingsSliderDragTarget = null; // "sensitivity" | "music" | "sfx"
 let settingsLatchedIndex = -1;
 
 function clamp(value, min, max) {
@@ -80,7 +81,7 @@ function distance(ax, ay, bx, by) {
 
 function getSettingsState() {
     if (!window.settings) {
-        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true };
+        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8 };
     }
     return window.settings;
 }
@@ -92,6 +93,12 @@ function applySettingsState() {
     }
     if (window.setCameraPreviewVisible) {
         window.setCameraPreviewVisible(!!settings.showCameraPreview);
+    }
+    if (window.setMusicVolume && typeof settings.musicVolume !== "undefined") {
+        window.setMusicVolume(Number(settings.musicVolume));
+    }
+    if (window.setSfxVolume && typeof settings.sfxVolume !== "undefined") {
+        window.setSfxVolume(Number(settings.sfxVolume));
     }
 }
 
@@ -114,6 +121,26 @@ function setSensitivityFromSliderX(x) {
     const settings = getSettingsState();
     settings.sensitivity = Math.round(value * 20) / 20;
     saveSettings();
+}
+
+function setMusicFromSliderX(x) {
+    const left = W / 2 - 180;
+    const right = W / 2 + 180;
+    const ratio = clamp((x - left) / (right - left), 0, 1);
+    const settings = getSettingsState();
+    settings.musicVolume = Math.round(ratio * 100) / 100;
+    saveSettings();
+    if (window.setMusicVolume) window.setMusicVolume(settings.musicVolume);
+}
+
+function setSfxFromSliderX(x) {
+    const left = W / 2 - 180;
+    const right = W / 2 + 180;
+    const ratio = clamp((x - left) / (right - left), 0, 1);
+    const settings = getSettingsState();
+    settings.sfxVolume = Math.round(ratio * 100) / 100;
+    saveSettings();
+    if (window.setSfxVolume) window.setSfxVolume(settings.sfxVolume);
 }
 
 function toggleSetting(key) {
@@ -460,7 +487,7 @@ function resetGame(mode) {
 
     gameState = GAME.PLAYING;
     if (window.playSound) {
-        window.playSound("start");
+        if (window.playStart) window.playStart();
     }
     syncBgmForScene();
 }
@@ -616,6 +643,22 @@ function updateSettings(delta, input) {
     drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, "rgba(255,255,255,0.78)");
     drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  攥拳时才使用灵敏度加成`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
 
+    const centerX = W / 2;
+    const sliderLeft = centerX - 180;
+    const sliderRight = centerX + 180;
+    const sliderYs = [240, 330, 420];
+    const muteX = 110;
+    const muteY = 320;
+    const cameraX = W - 110;
+    const cameraY = 320;
+
+    settingsItems[0].x = muteX;
+    settingsItems[0].y = muteY;
+    settingsItems[1].x = cameraX;
+    settingsItems[1].y = cameraY;
+    settingsItems[2].x = centerX;
+    settingsItems[2].y = 390;
+
     const hoveredIndex = getHoveredIndex(settingsItems, input.x, input.y, 130);
     let trigger = null;
 
@@ -627,96 +670,131 @@ function updateSettings(delta, input) {
         const hovered = index === hoveredIndex;
         const label = item.text();
         if (index === 2) {
-            const sliderLeft = W / 2 - 180;
-            const sliderRight = W / 2 + 180;
-            const sliderTop = item.y - 10;
-            const sliderBottom = item.y + 10;
-            const sliderHovered = input.x >= sliderLeft && input.x <= sliderRight && input.y >= sliderTop - 26 && input.y <= sliderBottom + 26;
+            // Draw three separate slider cards in the middle column.
+            const labels = ["灵敏度", "音乐音量", "音效音量"];
+            const settings = getSettingsState();
+            const values = [settings.sensitivity || 1.0, settings.musicVolume || 0.45, settings.sfxVolume || 0.8];
 
-            if (sliderHovered && input.fist) {
-                settingsSliderDragging = true;
-                settingsSliderDragSource = "hand";
+            for (let si = 0; si < 3; si += 1) {
+                const y = sliderYs[si];
+                const top = y - 28;
+                const bottom = y + 28;
+                const sliderHovered = input.x >= sliderLeft && input.x <= sliderRight && input.y >= top && input.y <= bottom;
+                if (sliderHovered && input.fist) {
+                    settingsSliderDragging = true;
+                    settingsSliderDragSource = "hand";
+                    settingsSliderDragTarget = si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx";
+                }
+                const rowHovered = sliderHovered || (settingsSliderDragging && settingsSliderDragTarget === (si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx"));
+
+                drawRoundedRect(sliderLeft - 10, y - 28, 380, 56, 18, rowHovered ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)", rowHovered ? item.color : "rgba(255,255,255,0.10)");
+                drawText(labels[si], centerX, y - 10, 24, rowHovered ? item.color : "#ffffff");
+
+                ctx.save();
+                ctx.strokeStyle = "rgba(255,255,255,0.35)";
+                ctx.lineWidth = 8;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, y + 10);
+                ctx.lineTo(sliderRight, y + 10);
+                ctx.stroke();
+
+                let handleX;
+                if (si === 0) {
+                    const v = values[0];
+                    handleX = sliderLeft + ((v - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
+                } else {
+                    const v = values[si];
+                    handleX = sliderLeft + (v) * (sliderRight - sliderLeft);
+                }
+
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                ctx.moveTo(sliderLeft, y + 10);
+                ctx.lineTo(handleX, y + 10);
+                ctx.stroke();
+
+                ctx.fillStyle = item.color;
+                ctx.beginPath();
+                ctx.arc(handleX, y + 10, 12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                const valueText = si === 0 ? (values[0] || 1.0).toFixed(2) : Math.round((values[si] || 0) * 100) + "%";
+                drawText(valueText, sliderRight + 52, y - 10, 18, item.color, "right");
+
+                if (settingsSliderDragging && settingsSliderDragTarget === (si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx")) {
+                    if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(input.x);
+                    else if (settingsSliderDragTarget === "music") setMusicFromSliderX(input.x);
+                    else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(input.x);
+                }
             }
 
-            if (settingsSliderDragging || sliderHovered) {
-                drawRoundedRect(sliderLeft - 20, item.y - 36, 400, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-                drawText(label, item.x, item.y - 20, 34, hovered ? item.color : "#ffffff");
+            if (settingsSliderDragSource === "hand" && !input.fist) {
+                settingsSliderDragging = false;
+                settingsSliderDragSource = null;
+                settingsSliderDragTarget = null;
+            }
 
-                ctx.save();
-                ctx.strokeStyle = "rgba(255,255,255,0.35)";
-                ctx.lineWidth = 8;
-                ctx.lineCap = "round";
-                ctx.beginPath();
-                ctx.moveTo(sliderLeft, item.y + 6);
-                ctx.lineTo(sliderRight, item.y + 6);
-                ctx.stroke();
-
-                const value = (getSettingsState().sensitivity || 1.0);
-                const handleX = sliderLeft + ((value - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
-                ctx.strokeStyle = item.color;
-                ctx.lineWidth = 8;
-                ctx.beginPath();
-                ctx.moveTo(sliderLeft, item.y + 6);
-                ctx.lineTo(handleX, item.y + 6);
-                ctx.stroke();
-
-                ctx.fillStyle = item.color;
-                ctx.beginPath();
-                ctx.arc(handleX, item.y + 6, 14, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
-
-                if (settingsSliderDragging) {
-                    setSensitivityFromSliderX(input.x);
-                }
-
-                if (settingsSliderDragSource === "hand" && !input.fist) {
-                    settingsSliderDragging = false;
-                    settingsSliderDragSource = null;
-                }
-
-                if (settingsSliderDragging) {
-                    trigger = null;
-                }
-            } else {
-                drawRoundedRect(sliderLeft - 20, item.y - 36, 400, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-                drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
-                drawText(`${(getSettingsState().sensitivity || 1.0).toFixed(2)}`, item.x + 145, item.y - 4, 28, item.color, "right");
-                ctx.save();
-                ctx.strokeStyle = "rgba(255,255,255,0.35)";
-                ctx.lineWidth = 8;
-                ctx.lineCap = "round";
-                ctx.beginPath();
-                ctx.moveTo(sliderLeft, item.y + 6);
-                ctx.lineTo(sliderRight, item.y + 6);
-                ctx.stroke();
-                const value = (getSettingsState().sensitivity || 1.0);
-                const handleX = sliderLeft + ((value - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
-                ctx.strokeStyle = item.color;
-                ctx.lineWidth = 8;
-                ctx.beginPath();
-                ctx.moveTo(sliderLeft, item.y + 6);
-                ctx.lineTo(handleX, item.y + 6);
-                ctx.stroke();
-                ctx.fillStyle = item.color;
-                ctx.beginPath();
-                ctx.arc(handleX, item.y + 6, 14, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
+            if (settingsSliderDragging) {
+                trigger = null;
             }
         } else {
-            if (hovered && settingsLatchedIndex !== index) {
-                settingsHold[index] = Math.min(REQUIRED_HOLD_MS, settingsHold[index] + delta);
+            // 对于静音和摄像头开关，显示为右侧的小圆形控件
+            if (item.action === "toggleMute" || item.action === "togglePreview") {
+                const cx = item.x;
+                const cy = item.y;
+                const r = 34;
+                const hoveredToggle = distance(input.x, input.y, cx, cy) <= r + 12;
+
+                if (hoveredToggle && settingsLatchedIndex !== index) {
+                    settingsHold[index] = Math.min(REQUIRED_HOLD_MS, settingsHold[index] + delta);
+                } else {
+                    settingsHold[index] = Math.max(0, settingsHold[index] - delta * 2);
+                }
+
+                // draw label above the circle
+                drawText(label, cx, cy - r - 18, 22, "#ffffff");
+
+                // draw circular toggle
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                ctx.fillStyle = hoveredToggle ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
+                ctx.fill();
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = hoveredToggle ? item.color : "rgba(255,255,255,0.12)";
+                ctx.stroke();
+
+                const stateVal = item.action === "toggleMute" ? (getSettingsState().muted ? 1 : 0) : (getSettingsState().showCameraPreview === false ? 0 : 1);
+                // inner indicator
+                ctx.beginPath();
+                ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+                ctx.fillStyle = stateVal ? item.color : "rgba(255,255,255,0.12)";
+                ctx.fill();
+                ctx.restore();
+
+                drawLoadingArc(cx, cy + r + 10, 14, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
+
+                if (settingsHold[index] >= REQUIRED_HOLD_MS) {
+                    trigger = item.action;
+                }
+
             } else {
-                settingsHold[index] = Math.max(0, settingsHold[index] - delta * 2);
-            }
+                if (hovered && settingsLatchedIndex !== index) {
+                    settingsHold[index] = Math.min(REQUIRED_HOLD_MS, settingsHold[index] + delta);
+                } else {
+                    settingsHold[index] = Math.max(0, settingsHold[index] - delta * 2);
+                }
 
-            drawRoundedRect(item.x - 180, item.y - 36, 360, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-            drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
-            drawLoadingArc(item.x, item.y + 30, 38, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
+                drawRoundedRect(item.x - 180, item.y - 36, 360, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+                drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
+                drawLoadingArc(item.x, item.y + 30, 38, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
 
-            if (settingsHold[index] >= REQUIRED_HOLD_MS) {
-                trigger = item.action;
+                if (settingsHold[index] >= REQUIRED_HOLD_MS) {
+                    trigger = item.action;
+                }
             }
         }
     });
@@ -740,6 +818,7 @@ function updateSettings(delta, input) {
         settingsHold = [0, 0, 0, 0];
         settingsSliderDragging = false;
         settingsSliderDragSource = null;
+        settingsSliderDragTarget = null;
     }
 }
 
@@ -769,6 +848,7 @@ function updatePlaying(delta, input) {
         remainingTime -= delta / 1000;
         if (remainingTime <= 0) {
             gameState = GAME.GAMEOVER;
+            if (window.playGameOver) window.playGameOver();
             return;
         }
     }
@@ -791,12 +871,17 @@ function updatePlaying(delta, input) {
             if (checkSlicePerfect({ x: fruit.x, y: fruit.y }, fruit.r, trail[i - 1], trail[i])) {
                 fruit.alive = false;
                 if (window.playSound) {
-                    window.playSound(fruit.type === "bomb" ? "bomb" : "slice");
+                    if (fruit.type === "bomb") {
+                        if (window.playBomb) window.playBomb();
+                    } else {
+                        if (window.playHit) window.playHit();
+                    }
                 }
 
                 if (fruit.type === "bomb") {
                     if (chosenMode === MODES.classic) {
                         gameState = GAME.GAMEOVER;
+                        if (window.playGameOver) window.playGameOver();
                     } else if (chosenMode === MODES.arcade) {
                         score = Math.max(0, score - 20);
                     }
@@ -823,8 +908,10 @@ function updatePlaying(delta, input) {
             fruit.alive = false;
             if (chosenMode === MODES.classic && fruit.type !== "bomb") {
                 lives -= 1;
+                if (window.playMiss) window.playMiss();
                 if (lives <= 0) {
                     gameState = GAME.GAMEOVER;
+                    if (window.playGameOver) window.playGameOver();
                 }
             }
         }
@@ -847,7 +934,7 @@ function updatePlaying(delta, input) {
 
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     if (chosenMode === MODES.classic) {
-        drawText(`Lives: ${"X".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
+        drawText(`Lives: ${"❤".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
     } else {
         drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
@@ -926,12 +1013,15 @@ window.addEventListener("pointermove", (event) => {
     mouseMovedRecently = true;
 
     if (gameState === GAME.SETTINGS && settingsSliderDragging) {
-        setSensitivityFromSliderX(mouseX);
+        if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(mouseX);
+        else if (settingsSliderDragTarget === "music") setMusicFromSliderX(mouseX);
+        else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(mouseX);
     }
 });
 
 window.addEventListener("pointerup", () => {
     settingsSliderDragging = false;
+    settingsSliderDragTarget = null;
     if (settingsSliderDragSource === "mouse") {
         settingsSliderDragSource = null;
     }
@@ -976,10 +1066,19 @@ canvas.addEventListener("pointerdown", (event) => {
                 syncBgmForScene();
             } else if (action === "togglePreview") {
                 toggleSetting("showCameraPreview");
-            } else if (action === "sensitivitySlider") {
-                settingsSliderDragging = true;
-                settingsSliderDragSource = "mouse";
-                setSensitivityFromSliderX(x);
+                } else if (action === "sensitivitySlider") {
+                    settingsSliderDragging = true;
+                    settingsSliderDragSource = "mouse";
+                    // Determine which of the three sliders was clicked: sensitivity/music/sfx
+                    const item = settingsItems[idx];
+                    const spacing = 64;
+                    const relY = y - item.y;
+                    if (relY < -spacing / 2) settingsSliderDragTarget = "sensitivity";
+                    else if (relY > spacing / 2) settingsSliderDragTarget = "sfx";
+                    else settingsSliderDragTarget = "music";
+                    if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(x);
+                    else if (settingsSliderDragTarget === "music") setMusicFromSliderX(x);
+                    else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(x);
             } else if (action === "back") {
                 returnToMenu();
                 gameState = GAME.MENU;
@@ -1019,7 +1118,7 @@ window.addEventListener("load", () => {
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = localStorage.getItem("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true };
+    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8 };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
