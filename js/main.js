@@ -402,6 +402,9 @@ function resetGame(mode) {
     if (window.playSound) {
         window.playSound("start");
     }
+    if (window.playBgm) {
+        window.playBgm(mode === MODES.classic ? "classic" : mode === MODES.zen ? "zen" : "arcade");
+    }
 }
 
 function returnToMenu() {
@@ -415,6 +418,9 @@ function returnToMenu() {
     gameoverHold = [0, 0];
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
+    }
+    if (window.playBgm) {
+        window.playBgm("menu");
     }
 }
 
@@ -703,6 +709,9 @@ window.addEventListener("pointerdown", () => {
     if (window.unlockAudio) {
         window.unlockAudio();
     }
+    if (gameState === GAME.MENU && window.playBgm) {
+        window.playBgm("menu");
+    }
 });
 
 window.addEventListener("keydown", (event) => {
@@ -713,6 +722,9 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("load", () => {
     drawBackground();
+    if (window.playBgm) {
+        window.playBgm("menu");
+    }
     window.requestAnimationFrame(loop);
 });
 
