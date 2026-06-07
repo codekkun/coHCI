@@ -3,27 +3,60 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HCI期末项目：体感水果忍者</title>
-    
+    <title>水果忍者 Web 版</title>
     <link rel="stylesheet" href="css/style.css">
-    
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" defer></script>
 </head>
-
 <body>
-    <h1 id="loadingText" style="text-align: center; color: #333; margin-top: 50px;">
-        正在请求摄像头权限并加载手势模型，请稍候...
-    </h1>
+    <div class="page-shell">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">Fruit Ninja</p>
+                <h1>水果忍者 Web 版</h1>
+            </div>
+            <div class="status-group">
+                <span id="cameraStatus" class="status-pill">正在等待摄像头</span>
+                <button id="audioUnlock" class="ghost-button" type="button">启用声音</button>
+                <button id="openSettings" class="ghost-button" type="button">设置</button>
+            </div>
+        </header>
 
-    <video class="input_video" style="display: none;"></video>
-    
-    <div style="display: flex; justify-content: center; margin-top: 20px;">
-        <canvas class="output_canvas" width="1280" height="720" style="border: 2px solid #ccc; background-color: #f9f9f9;"></canvas>
+        <main class="game-shell">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="gameCanvas" width="900" height="600"></canvas>
+
+            <section class="hud-card">
+                <div>
+                    <p class="hud-label">操作</p>
+                    <p>挥动手指切水果；没有摄像头时可直接用鼠标拖动。</p>
+                </div>
+                <div>
+                    <p class="hud-label">模式</p>
+                    <p>经典模式有生命值，禅意模式倒计时，街机模式切炸弹不死亡。</p>
+                </div>
+            </section>
+        </main>
     </div>
 
+    <script src="js/audio.js"></script>
+    <script src="js/meidapipe.js"></script>
     <script src="js/main.js"></script>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="settings-modal" aria-hidden="true">
+        <div class="settings-panel">
+            <h3>设置</h3>
+            <div class="settings-row">
+                <label><input id="mutedCheckbox" type="checkbox"> 静音</label>
+            </div>
+            <div class="settings-row">
+                <label>灵敏度 <input id="sensitivityRange" type="range" min="0.6" max="1.6" step="0.05"></label>
+            </div>
+            <div class="settings-actions">
+                <button id="saveSettings" class="ghost-button">保存</button>
+                <button id="closeSettings" class="ghost-button">关闭</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
