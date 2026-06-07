@@ -1,0 +1,768 @@
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const W = canvas.width;
+const H = canvas.height;
+
+window.GAME_WIDTH = W;
+window.GAME_HEIGHT = H;
+
+const ui = {
+    cameraStatus: document.getElementById("cameraStatus"),
+};
+
+const GAME = {
+    MENU: 0,
+    PLAYING: 1,
+    GAMEOVER: 2,
+};
+
+const MODES = {
+    classic: 1,
+    zen: 2,
+    arcade: 3,
+};
+
+const REQUIRED_HOLD_MS = 900;
+
+const menuItems = [
+    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 220, color: "#7ef7c5" },
+    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 320, color: "#6db8ff" },
+    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 420, color: "#dba4ff" },
+];
+
+const gameoverItems = [
+    { text: "重新开始", action: "restart", x: W / 2 - 150, y: 405, color: "#7ef7c5" },
+    { text: "返回菜单", action: "menu", x: W / 2 + 150, y: 405, color: "#ffd166" },
+];
+
+let gameState = GAME.MENU;
+let chosenMode = MODES.classic;
+let score = 0;
+let lives = 3;
+let remainingTime = 0;
+let fruits = [];
+let particles = [];
+let slices = [];
+let splats = [];
+let trail = [];
+let menuHold = [0, 0, 0];
+let gameoverHold = [0, 0];
+let mouseX = W / 2;
+let mouseY = H / 2;
+let mouseMovedRecently = false;
+let lastTimestamp = 0;
+let pointerX = mouseX;
+let pointerY = mouseY;
+let lastInputWasHand = false;
+let usingMouse = false;
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function distance(ax, ay, bx, by) {
+    return Math.hypot(ax - bx, ay - by);
+}
+
+function drawText(text, x, y, size = 48, color = "#ffffff", align = "center") {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = `${size}px "Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = align;
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, x, y);
+    ctx.restore();
+}
+
+function drawRoundedRect(x, y, width, height, radius, fillStyle, strokeStyle = null) {
+    const right = x + width;
+    const bottom = y + height;
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(right, y, right, bottom, radius);
+    ctx.arcTo(right, bottom, x, bottom, radius);
+    ctx.arcTo(x, bottom, x, y, radius);
+    ctx.arcTo(x, y, right, y, radius);
+    ctx.closePath();
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+    if (strokeStyle) {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+}
+
+function drawLoadingArc(centerX, centerY, radius, progress, color) {
+    if (progress <= 0) {
+        return;
+    }
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress), false);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawBackground() {
+    const gradient = ctx.createLinearGradient(0, 0, W, H);
+    gradient.addColorStop(0, "#0d1629");
+    gradient.addColorStop(0.55, "#152841");
+    gradient.addColorStop(1, "#0f1320");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, W, H);
+
+    const blobs = [
+        { x: 120, y: 90, r: 140, color: "rgba(126, 247, 197, 0.10)" },
+        { x: 760, y: 110, r: 170, color: "rgba(255, 209, 102, 0.10)" },
+        { x: 680, y: 500, r: 180, color: "rgba(110, 144, 255, 0.12)" },
+    ];
+
+    blobs.forEach((blob) => {
+        const glow = ctx.createRadialGradient(blob.x, blob.y, 0, blob.x, blob.y, blob.r);
+        glow.addColorStop(0, blob.color);
+        glow.addColorStop(1, "transparent");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(blob.x, blob.y, blob.r, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+function drawTrail() {
+    if (trail.length < 2) {
+        return;
+    }
+
+    ctx.save();
+    ctx.lineCap = "round";
+    for (let i = 1; i < trail.length; i += 1) {
+        const alpha = i / trail.length;
+        ctx.strokeStyle = `rgba(207, 244, 255, ${0.18 + alpha * 0.82})`;
+        ctx.lineWidth = 3 + alpha * 10;
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function checkSlicePerfect(center, radius, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSq = dx * dx + dy * dy;
+    if (lengthSq === 0) {
+        return distance(center.x, center.y, start.x, start.y) <= radius + 8;
+    }
+
+    const t = clamp(((center.x - start.x) * dx + (center.y - start.y) * dy) / lengthSq, 0, 1);
+    const projX = start.x + t * dx;
+    const projY = start.y + t * dy;
+    return distance(center.x, center.y, projX, projY) <= radius + 10;
+}
+
+class Fruit {
+    constructor(mode) {
+        const pool = mode === MODES.zen
+            ? ["apple", "orange", "banana", "watermelon"]
+            : ["apple", "orange", "banana", "watermelon", "bomb"];
+
+        this.type = pool[Math.floor(Math.random() * pool.length)];
+        this.r = this.type === "bomb" ? 40 : 38;
+        this.x = Math.random() * (W - 300) + 150;
+        this.y = H + 50;
+        this.vx = Math.random() * 6 - 3;
+        this.vy = -Math.random() * 5 - 13;
+        this.gravity = 0.30;
+        this.rotation = Math.random() * Math.PI * 2;
+        this.spin = Math.random() * 0.12 - 0.06;
+        this.alive = true;
+    }
+
+    update(step = 1) {
+        this.vy += this.gravity * step;
+        this.x += this.vx * step;
+        this.y += this.vy * step;
+        this.rotation += this.spin * step;
+    }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rotation);
+
+        if (this.type === "bomb") {
+            ctx.fillStyle = "#1f232b";
+            ctx.beginPath();
+            ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#ff4d4d";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            ctx.strokeStyle = "#ffd166";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, -this.r - 8);
+            ctx.lineTo(10, -this.r - 24);
+            ctx.stroke();
+            ctx.fillStyle = "#ffd166";
+            ctx.beginPath();
+            ctx.arc(10, -this.r - 24, 4, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            const palette = {
+                apple: { skin: "#ff4b4b", flesh: "#ffd7d7", leaf: "#5ec58f" },
+                orange: { skin: "#ff9f1c", flesh: "#ffe1af", leaf: "#4caf50" },
+                banana: { skin: "#ffe066", flesh: "#fff5b0", leaf: "#67c587" },
+                watermelon: { skin: "#4caf50", flesh: "#ff7383", leaf: "#2d9c61" },
+            }[this.type];
+
+            ctx.fillStyle = palette.skin;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = palette.flesh;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.r - 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = palette.skin;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.r - 16, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+            ctx.beginPath();
+            ctx.ellipse(-this.r * 0.28, -this.r * 0.24, this.r * 0.18, this.r * 0.28, -0.6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = palette.leaf;
+            ctx.beginPath();
+            ctx.ellipse(this.r * 0.18, -this.r * 0.96, this.r * 0.18, this.r * 0.4, -0.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.restore();
+    }
+}
+
+class HalfFruitSlice {
+    constructor(x, y, vx, vy, type, side) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx + (side === "left" ? -3 : 3);
+        this.vy = vy - 2;
+        this.gravity = 0.34;
+        this.type = type;
+        this.side = side;
+        this.life = 40;
+        this.angle = 0;
+        this.spin = Math.random() * 10 - 5;
+        this.r = 38;
+    }
+
+    update(step = 1) {
+        this.vy += this.gravity * step;
+        this.x += this.vx * step;
+        this.y += this.vy * step;
+        this.angle += this.spin * step;
+        this.life -= step;
+    }
+
+    draw() {
+        const palette = {
+            apple: { skin: "#ff4b4b", flesh: "#ffd7d7" },
+            orange: { skin: "#ff9f1c", flesh: "#ffe1af" },
+            banana: { skin: "#ffe066", flesh: "#fff5b0" },
+            watermelon: { skin: "#4caf50", flesh: "#ff7383" },
+        }[this.type];
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle * Math.PI / 180);
+
+        ctx.fillStyle = palette.skin;
+        ctx.beginPath();
+        if (this.side === "left") {
+            ctx.arc(0, 0, this.r, Math.PI / 2, -Math.PI / 2, true);
+            ctx.lineTo(0, this.r);
+        } else {
+            ctx.arc(0, 0, this.r, -Math.PI / 2, Math.PI / 2, true);
+            ctx.lineTo(0, this.r);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = palette.flesh;
+        ctx.beginPath();
+        if (this.side === "left") {
+            ctx.arc(0, 0, this.r - 6, Math.PI / 2, -Math.PI / 2, true);
+            ctx.lineTo(0, this.r - 6);
+        } else {
+            ctx.arc(0, 0, this.r - 6, -Math.PI / 2, Math.PI / 2, true);
+            ctx.lineTo(0, this.r - 6);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+    }
+}
+
+class Particle {
+    constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.vx = Math.random() * 10 - 5;
+        this.vy = Math.random() * -5 - 1;
+        this.color = color;
+        this.radius = Math.random() * 3 + 2;
+        this.life = 25;
+    }
+
+    update(step = 1) {
+        this.vy += 0.22 * step;
+        this.x += this.vx * step;
+        this.y += this.vy * step;
+        this.life -= step;
+    }
+
+    draw() {
+        if (this.life <= 0) {
+            return;
+        }
+        ctx.save();
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+class SplatJuice {
+    constructor(x, y, color) {
+        this.x = x + Math.random() * 30 - 15;
+        this.y = y + Math.random() * 30 - 15;
+        this.color = color;
+        this.radius = Math.random() * 18 + 22;
+        this.alpha = 180;
+    }
+
+    update(step = 1) {
+        this.alpha = Math.max(0, this.alpha - 2 * step);
+    }
+
+    draw() {
+        if (this.alpha <= 0) {
+            return;
+        }
+        ctx.save();
+        ctx.globalAlpha = this.alpha / 255;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+        for (let i = 0; i < 4; i += 1) {
+            const angle = (Math.PI * 2 * i) / 4;
+            ctx.beginPath();
+            ctx.arc(this.x + Math.cos(angle) * this.radius * 0.45, this.y + Math.sin(angle) * this.radius * 0.45, 8, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+}
+
+function resetGame(mode) {
+    chosenMode = mode;
+    score = 0;
+    lives = 3;
+    fruits = [];
+    particles = [];
+    slices = [];
+    splats = [];
+    trail = [];
+    menuHold = [0, 0, 0];
+    gameoverHold = [0, 0];
+
+    if (mode === MODES.zen) {
+        remainingTime = 90;
+    } else if (mode === MODES.arcade) {
+        remainingTime = 60;
+    } else {
+        remainingTime = 0;
+    }
+
+    gameState = GAME.PLAYING;
+    if (window.playSound) {
+        window.playSound("start");
+    }
+}
+
+function returnToMenu() {
+    gameState = GAME.MENU;
+    fruits = [];
+    particles = [];
+    slices = [];
+    splats = [];
+    trail = [];
+    menuHold = [0, 0, 0];
+    gameoverHold = [0, 0];
+    if (ui.cameraStatus) {
+        ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
+    }
+}
+
+function getInputPosition() {
+    const cameraActive = window.handTracked && window.cameraReady;
+    // active when camera active or mouse recently moved or already using mouse
+    const active = cameraActive || mouseMovedRecently || usingMouse;
+
+    // Decide target source:
+    // - If camera active -> follow hand
+    // - Else if mouse moved recently -> start using mouse and follow mouse
+    // - Else if already usingMouse -> keep following mouse
+    // - Else -> keep current pointer (do not jump to mouse)
+    let targetX, targetY;
+    if (cameraActive) {
+        targetX = clamp(window.handX, 0, W);
+        targetY = clamp(window.handY, 0, H);
+        usingMouse = false;
+    } else if (mouseMovedRecently) {
+        usingMouse = true;
+        targetX = clamp(mouseX, 0, W);
+        targetY = clamp(mouseY, 0, H);
+    } else if (usingMouse) {
+        targetX = clamp(mouseX, 0, W);
+        targetY = clamp(mouseY, 0, H);
+    } else {
+        // keep pointer where it is
+        targetX = pointerX;
+        targetY = pointerY;
+    }
+
+    // 平滑：手势时响应快，鼠标切换时平滑过渡避免瞬移
+    let alpha;
+    if (cameraActive) {
+        alpha = 0.7; // 手势跟随较快
+    } else {
+        // 如果刚从手势切换到鼠标，使用更小的 alpha 以平滑过渡
+        alpha = lastInputWasHand ? 0.12 : 0.28;
+    }
+
+    pointerX = pointerX + (targetX - pointerX) * alpha;
+    pointerY = pointerY + (targetY - pointerY) * alpha;
+
+    lastInputWasHand = cameraActive;
+
+    return { x: pointerX, y: pointerY, active, fist: Boolean(window.isFist && cameraActive) };
+}
+
+// 在一组交互 item 中选出距离指针最近且在阈值内的索引
+function getHoveredIndex(items, px, py, radius) {
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const d = distance(px, py, it.x, it.y);
+        if (d <= radius && d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
+}
+
+function spawnFruit(step) {
+    const chance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : 0.055;
+    if (Math.random() < chance * step) {
+        fruits.push(new Fruit(chosenMode));
+    }
+}
+
+function updateMenu(delta, input) {
+    drawText("Select Game Mode", W / 2, 88, 58, "#ffffff");
+    drawText("挥动或移动光标到按钮上，停留片刻即可开始", W / 2, 132, 24, "rgba(255,255,255,0.78)");
+
+    let trigger = null;
+    const hoveredIndex = getHoveredIndex(menuItems, input.x, input.y, 120);
+    menuItems.forEach((item, index) => {
+        const hovered = index === hoveredIndex;
+        if (hovered) {
+            menuHold[index] = Math.min(REQUIRED_HOLD_MS, menuHold[index] + delta);
+        } else {
+            menuHold[index] = Math.max(0, menuHold[index] - delta * 2);
+        }
+
+        drawRoundedRect(item.x - 150, item.y - 36, 300, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+        drawText(item.text, item.x, item.y - 4, 36, hovered ? item.color : "#ffffff");
+        drawLoadingArc(item.x, item.y + 30, 38, menuHold[index] / REQUIRED_HOLD_MS, item.color);
+
+        if (menuHold[index] >= REQUIRED_HOLD_MS) {
+            trigger = item;
+        }
+    });
+
+    if (trigger) {
+        resetGame(trigger.mode);
+    }
+}
+
+function updatePlaying(delta, input) {
+    if (chosenMode === MODES.zen || chosenMode === MODES.arcade) {
+        remainingTime -= delta / 1000;
+        if (remainingTime <= 0) {
+            gameState = GAME.GAMEOVER;
+            return;
+        }
+    }
+
+    trail.push({ x: input.x, y: input.y });
+    if (trail.length > 14) {
+        trail.shift();
+    }
+
+    spawnFruit(delta / 16.67);
+
+    fruits.forEach((fruit) => fruit.update(delta / 16.67));
+
+    fruits.forEach((fruit) => {
+        if (!fruit.alive) {
+            return;
+        }
+
+        for (let i = 1; i < trail.length; i += 1) {
+            if (checkSlicePerfect({ x: fruit.x, y: fruit.y }, fruit.r, trail[i - 1], trail[i])) {
+                fruit.alive = false;
+                if (window.playSound) {
+                    window.playSound(fruit.type === "bomb" ? "bomb" : "slice");
+                }
+
+                if (fruit.type === "bomb") {
+                    if (chosenMode === MODES.classic) {
+                        gameState = GAME.GAMEOVER;
+                    } else if (chosenMode === MODES.arcade) {
+                        score = Math.max(0, score - 20);
+                    }
+                } else {
+                    score += 10;
+                    const palette = {
+                        apple: { flesh: "rgba(255, 128, 128, 0.95)", skin: "rgba(255, 77, 77, 0.95)" },
+                        orange: { flesh: "rgba(255, 214, 150, 0.95)", skin: "rgba(255, 159, 28, 0.95)" },
+                        banana: { flesh: "rgba(255, 245, 176, 0.95)", skin: "rgba(255, 224, 102, 0.95)" },
+                        watermelon: { flesh: "rgba(255, 115, 131, 0.95)", skin: "rgba(76, 175, 80, 0.95)" },
+                    }[fruit.type];
+                    splats.push(new SplatJuice(fruit.x, fruit.y, palette.flesh));
+                    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "left"));
+                    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "right"));
+                    for (let j = 0; j < 12; j += 1) {
+                        particles.push(new Particle(fruit.x, fruit.y, palette.skin));
+                    }
+                }
+                break;
+            }
+        }
+
+        if (fruit.alive && fruit.y > H + 60 && fruit.vy > 0) {
+            fruit.alive = false;
+            if (chosenMode === MODES.classic && fruit.type !== "bomb") {
+                lives -= 1;
+                if (lives <= 0) {
+                    gameState = GAME.GAMEOVER;
+                }
+            }
+        }
+    });
+
+    fruits = fruits.filter((fruit) => fruit.alive && fruit.y < H + 80);
+    particles = particles.filter((particle) => particle.life > 0);
+    slices = slices.filter((slice) => slice.life > 0);
+    splats = splats.filter((splat) => splat.alpha > 0);
+
+    particles.forEach((particle) => particle.update(delta / 16.67));
+    slices.forEach((slice) => slice.update(delta / 16.67));
+    splats.forEach((splat) => splat.update(delta / 16.67));
+
+    drawTrail();
+    fruits.forEach((fruit) => fruit.draw());
+    slices.forEach((slice) => slice.draw());
+    particles.forEach((particle) => particle.draw());
+    splats.forEach((splat) => splat.draw());
+
+    drawText(`Score: ${score}`, 80, 40, 30, "#ffffff", "left");
+    if (chosenMode === MODES.classic) {
+        drawText(`Lives: ${"X".repeat(Math.max(0, lives))}`, W - 120, 40, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
+    } else {
+        drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 40, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
+    }
+}
+
+function updateGameover(delta, input) {
+    drawRoundedRect(90, 105, W - 180, H - 210, 28, "rgba(3, 8, 16, 0.58)", "rgba(255,255,255,0.12)");
+    drawText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "TIME UP!" : "GAME OVER", W / 2, 170, 62, "#ff6b6b");
+    drawText(`Final Score: ${score}`, W / 2, 238, 38, "#ffffff");
+
+    let trigger = null;
+    const hoveredIndexG = getHoveredIndex(gameoverItems, input.x, input.y, 95);
+    gameoverItems.forEach((item, index) => {
+        const hovered = index === hoveredIndexG;
+        if (hovered) {
+            gameoverHold[index] = Math.min(REQUIRED_HOLD_MS, gameoverHold[index] + delta);
+        } else {
+            gameoverHold[index] = Math.max(0, gameoverHold[index] - delta * 2);
+        }
+
+        drawRoundedRect(item.x - 110, item.y - 30, 220, 60, 20, hovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", hovered ? item.color : "rgba(255,255,255,0.12)");
+        drawText(item.text, item.x, item.y - 2, 30, hovered ? item.color : "#ffffff");
+        drawLoadingArc(item.x, item.y + 26, 32, gameoverHold[index] / REQUIRED_HOLD_MS, item.color);
+
+        if (gameoverHold[index] >= REQUIRED_HOLD_MS) {
+            trigger = item.action;
+        }
+    });
+
+    if (trigger === "restart") {
+        resetGame(chosenMode);
+    } else if (trigger === "menu") {
+        returnToMenu();
+    }
+}
+
+function drawPointer(input) {
+    if (gameState === GAME.PLAYING) return; // only show pointer in menu/gameover
+    ctx.save();
+    ctx.strokeStyle = input.fist ? "#ff6b6b" : "#7ef7c5";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(input.x, input.y, input.fist ? 14 : 12, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function loop(timestamp) {
+    const delta = lastTimestamp ? Math.min(34, timestamp - lastTimestamp) : 16.67;
+    lastTimestamp = timestamp;
+    const input = getInputPosition();
+
+    drawBackground();
+
+    if (gameState === GAME.MENU) {
+        updateMenu(delta, input);
+    } else if (gameState === GAME.PLAYING) {
+        updatePlaying(delta, input);
+    } else if (gameState === GAME.GAMEOVER) {
+        updateGameover(delta, input);
+    }
+
+    drawPointer(input);
+
+    if (gameState !== GAME.PLAYING) {
+        drawText("移动到按钮上并停留约 1 秒", W / 2, H - 52, 20, "rgba(255,255,255,0.68)");
+    }
+
+    mouseMovedRecently = false;
+    window.requestAnimationFrame(loop);
+}
+
+window.addEventListener("pointermove", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = ((event.clientX - rect.left) / rect.width) * W;
+    mouseY = ((event.clientY - rect.top) / rect.height) * H;
+    mouseMovedRecently = true;
+});
+
+// 点击画布直接触发菜单/结算操作（便于鼠标用户）
+canvas.addEventListener("pointerdown", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * W;
+    const y = ((event.clientY - rect.top) / rect.height) * H;
+
+    if (gameState === GAME.MENU) {
+        const idx = getHoveredIndex(menuItems, x, y, 120);
+        if (idx !== -1) {
+            resetGame(menuItems[idx].mode);
+            return;
+        }
+    } else if (gameState === GAME.GAMEOVER) {
+        const idx = getHoveredIndex(gameoverItems, x, y, 95);
+        if (idx !== -1) {
+            const action = gameoverItems[idx].action;
+            if (action === "restart") resetGame(chosenMode);
+            else if (action === "menu") returnToMenu();
+            return;
+        }
+    }
+});
+
+window.addEventListener("pointerdown", () => {
+    if (window.unlockAudio) {
+        window.unlockAudio();
+    }
+});
+
+window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" || event.key.toLowerCase() === "m") {
+        returnToMenu();
+    }
+});
+
+window.addEventListener("load", () => {
+    drawBackground();
+    window.requestAnimationFrame(loop);
+});
+
+// ---------------- Settings UI ----------------
+function loadSettings() {
+    const raw = localStorage.getItem("cohci_settings");
+    let s = { muted: false, sensitivity: 1.0 };
+    try {
+        if (raw) s = Object.assign(s, JSON.parse(raw));
+    } catch (e) {}
+    window.settings = s;
+    // apply muted immediately
+    if (window.setMuted) window.setMuted(!!s.muted);
+}
+
+function saveSettings() {
+    if (!window.settings) window.settings = { muted: false, sensitivity: 1.0 };
+    localStorage.setItem("cohci_settings", JSON.stringify(window.settings));
+}
+
+function bindSettingsUI() {
+    const openBtn = document.getElementById("openSettings");
+    const modal = document.getElementById("settingsModal");
+    const closeBtn = document.getElementById("closeSettings");
+    const saveBtn = document.getElementById("saveSettings");
+    const mutedCheckbox = document.getElementById("mutedCheckbox");
+    const sensitivityRange = document.getElementById("sensitivityRange");
+
+    if (!openBtn || !modal) return;
+
+    function refreshUI() {
+        mutedCheckbox.checked = !!window.settings.muted;
+        sensitivityRange.value = window.settings.sensitivity || 1.0;
+    }
+
+    openBtn.addEventListener("click", () => {
+        modal.setAttribute("aria-hidden", "false");
+        refreshUI();
+    });
+    closeBtn.addEventListener("click", () => modal.setAttribute("aria-hidden", "true"));
+    saveBtn.addEventListener("click", () => {
+        window.settings.muted = !!mutedCheckbox.checked;
+        window.settings.sensitivity = Number(sensitivityRange.value) || 1.0;
+        if (window.setMuted) window.setMuted(window.settings.muted);
+        saveSettings();
+        modal.setAttribute("aria-hidden", "true");
+    });
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+    loadSettings();
+    bindSettingsUI();
+});
