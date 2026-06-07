@@ -8,7 +8,37 @@ const AudioEngine = (() => {
             currentUrl: null,
             token: 0,
         },
+        musicVolume: 0.45,
+        sfxVolume: 0.8,
     };
+
+    // 默认的文件音效目录（放在 assets/sounds/sound-effects 下）
+    const SFX_DIR = "assets/sounds/sound-effects/";
+
+    function playEffectFile(url) {
+        const context = ensureContext();
+        if (!context) {
+            // Fallback to HTMLAudio when WebAudio 不可用
+            try {
+                const a = new Audio(url);
+                a.preload = "auto";
+                a.volume = state.sfxVolume;
+                a.play().catch(() => {});
+            } catch (e) {}
+            return;
+        }
+
+        try {
+            const audio = new Audio(url);
+            audio.preload = "auto";
+            audio.volume = state.sfxVolume;
+            audio.play().catch(() => {
+                // 浏览器可能阻止自动播放，忽略错误
+            });
+        } catch (e) {
+            // 忽略播放失败
+        }
+    }
 
     // 把背景音乐文件放在 assets/sounds 下面，例如：
     // assets/sounds/bgm/menu/menu-01.mp3
@@ -121,7 +151,7 @@ const AudioEngine = (() => {
         const audio = new Audio(nextUrl);
         audio.preload = "auto";
         audio.loop = false;
-        audio.volume = 0.45;
+        audio.volume = state.musicVolume;
 
         audio.addEventListener("ended", () => {
             if (state.bgm.mode !== playlistMode || state.bgm.token !== token) {
@@ -191,6 +221,7 @@ const AudioEngine = (() => {
         }
         if (window.settings && window.settings.muted) return;
 
+        // 先保留已有的合成音效逻辑：slice, bomb, ui, start
         switch (type) {
             case "slice":
                 tone({ frequency: 660, duration: 0.08, type: "triangle", gain: 0.07, sweepTo: 980 });
@@ -205,14 +236,83 @@ const AudioEngine = (() => {
                 tone({ frequency: 392, duration: 0.09, type: "triangle", gain: 0.06, sweepTo: 784 });
                 break;
             default:
+                // 如果传入的是文件名或带扩展名的路径，尝试从 sound-effects 文件夹播放对应文件。
+                // 支持三种形式：
+                // 1) 直接传文件名（比如 "coin" -> assets/sounds/sound-effects/coin.mp3）
+                // 2) 传带扩展名的文件名或相对路径（比如 "coin.wav" 或 "sounds/coin.mp3"）
+                // 3) 以 "file:" 开头的完整路径（比如 "file:assets/.../coin.mp3"）
+
+                const isFilePrefix = typeof type === "string" && type.indexOf("file:") === 0;
+                const looksLikePath = typeof type === "string" && /\.(mp3|wav|ogg)$/i.test(type);
+
+                if (isFilePrefix) {
+                    playEffectFile(type.slice(5));
+                    break;
+                }
+
+                if (looksLikePath) {
+                    playEffectFile(type);
+                    break;
+                }
+
+                if (typeof type === "string") {
+                    // 尝试约定的 mp3 文件名
+                    playEffectFile(SFX_DIR + type + ".mp3");
+                    break;
+                }
+
+                // 回退成默认短音
                 tone({ frequency: 440, duration: 0.05, type: "sine", gain: 0.04 });
         }
 
-        // 未来如果要把音效也改成文件播放，可以在这里加对应分支：
-        // case "slice": playEffectFile("assets/sounds/sfx/slice.mp3"); break;
-        // case "bomb": playEffectFile("assets/sounds/sfx/bomb.mp3"); break;
-        // case "ui": playEffectFile("assets/sounds/sfx/ui.mp3"); break;
-        // 目前先保留原来的合成音效逻辑，避免影响现有体验。
+        // 未来如果需要可以把合成音效改成文件播放，或扩展 SFX 映射表。
+    }
+
+    // 高层音效接口：把选择逻辑放在这里，供外部调用
+    function playHit() {
+        if (!state.unlocked && !unlock()) return;
+        if (window.settings && window.settings.muted) return;
+        const idx = Math.floor(Math.random() * 6) + 1;
+        playSound("命中" + idx);
+    }
+
+    function playBomb() {
+        if (!state.unlocked && !unlock()) return;
+        if (window.settings && window.settings.muted) return;
+        playSound("炸弹爆炸");
+    }
+
+    function playMiss() {
+        if (!state.unlocked && !unlock()) return;
+        if (window.settings && window.settings.muted) return;
+        const idx = Math.random() < 0.5 ? "空刀1" : "空刀2";
+        playSound(idx);
+    }
+
+    function playGameOver() {
+        if (!state.unlocked && !unlock()) return;
+        if (window.settings && window.settings.muted) return;
+        playSound("游戏结束");
+    }
+
+    function playStart() {
+        if (!state.unlocked && !unlock()) return;
+        if (window.settings && window.settings.muted) return;
+        // 保留合成 start 音，后续若有文件可用可改为文件播放
+        playSound("start");
+    }
+
+    function setMusicVolume(v) {
+        const value = Math.max(0, Math.min(1, Number(v) || 0));
+        state.musicVolume = value;
+        if (state.bgm && state.bgm.audio) {
+            try { state.bgm.audio.volume = state.musicVolume; } catch (e) {}
+        }
+    }
+
+    function setSfxVolume(v) {
+        const value = Math.max(0, Math.min(1, Number(v) || 0));
+        state.sfxVolume = value;
     }
 
     function bindUnlockUI() {
@@ -238,13 +338,20 @@ const AudioEngine = (() => {
         setButtonState();
     }
 
-    return { playSound, playBgm, stopBgm, unlock, bindUnlockUI, state };
+    return { playSound, playBgm, stopBgm, unlock, bindUnlockUI, state, playHit, playBomb, playMiss, playGameOver, playStart, setMusicVolume, setSfxVolume };
 })();
 
 window.playSound = AudioEngine.playSound;
 window.playBgm = AudioEngine.playBgm;
 window.stopBgm = AudioEngine.stopBgm;
 window.unlockAudio = AudioEngine.unlock;
+window.playHit = AudioEngine.playHit;
+window.playBomb = AudioEngine.playBomb;
+window.playMiss = AudioEngine.playMiss;
+window.playGameOver = AudioEngine.playGameOver;
+window.playStart = AudioEngine.playStart;
+window.setMusicVolume = AudioEngine.setMusicVolume;
+window.setSfxVolume = AudioEngine.setSfxVolume;
 
 window.addEventListener("DOMContentLoaded", () => {
     AudioEngine.bindUnlockUI();
