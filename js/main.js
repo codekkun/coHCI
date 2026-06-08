@@ -28,9 +28,11 @@ const REQUIRED_HOLD_MS = 900;
 const COMBO_WINDOW_MS = 1300;
 const BASE_FRUIT_SCORE = 10;
 const COMBO_STEP = 4;
-const TIME_STOP_DURATION_MS = 2200;
-const TIME_STOP_COOLDOWN_MS = 5200;
+const TIME_STOP_DURATION_MS = 4100;
+const TIME_STOP_COOLDOWN_MS = 7600;
 const TIME_STOP_SLOW_FACTOR = 0.04;
+const TIME_STOP_BGM_VOLUME_FACTOR = 0.18;
+const TIME_STOP_SOUND = "时间停止";
 
 const EFFECT_LEVELS = {
     low: {
@@ -141,6 +143,7 @@ let timeStopFlash = 0;
 let timeStopMessageTimer = 0;
 let timeStopX = W / 2;
 let timeStopY = H / 2;
+let timeStopBgmDucked = false;
 
 const shopItems = [
     { type: "item", text: "清屏道具 (¥50)", cost: 50, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
@@ -257,7 +260,23 @@ function resetSettingsHold() {
     settingsHold = settingsItems.map(() => 0);
 }
 
+function setTimeStopBgmDucked(ducked) {
+    if (!window.setMusicVolume) {
+        timeStopBgmDucked = ducked;
+        return;
+    }
+
+    const settings = getSettingsState();
+    const baseVolume = clamp(Number(settings.musicVolume) || 0, 0, 1);
+    const targetVolume = ducked && !settings.muted ? baseVolume * TIME_STOP_BGM_VOLUME_FACTOR : baseVolume;
+    window.setMusicVolume(targetVolume);
+    timeStopBgmDucked = ducked;
+}
+
 function resetTimeStop() {
+    if (timeStopBgmDucked) {
+        setTimeStopBgmDucked(false);
+    }
     timeStopTimer = 0;
     timeStopCooldown = 0;
     timeStopFlash = 0;
@@ -265,6 +284,7 @@ function resetTimeStop() {
 }
 
 function updateTimeStopTimers(delta) {
+    const wasActive = timeStopTimer > 0;
     if (timeStopTimer > 0) {
         timeStopTimer = Math.max(0, timeStopTimer - delta);
     }
@@ -276,6 +296,9 @@ function updateTimeStopTimers(delta) {
     }
     if (timeStopMessageTimer > 0) {
         timeStopMessageTimer = Math.max(0, timeStopMessageTimer - delta);
+    }
+    if (wasActive && timeStopTimer === 0 && timeStopBgmDucked) {
+        setTimeStopBgmDucked(false);
     }
 }
 
@@ -291,7 +314,8 @@ function triggerTimeStop(x, y) {
     timeStopY = clamp(y, 0, H);
     comboEdgePulse = Math.max(comboEdgePulse, 0.7);
     comboEdgeColor = "#9de7ff";
-    if (window.playSound) window.playSound("ui");
+    setTimeStopBgmDucked(true);
+    if (window.playSound) window.playSound(TIME_STOP_SOUND);
     return true;
 }
 
@@ -451,7 +475,9 @@ function setMusicFromSliderX(x) {
     const settings = getSettingsState();
     settings.musicVolume = Math.round(ratio * 100) / 100;
     saveSettings();
-    if (window.setMusicVolume) window.setMusicVolume(settings.musicVolume);
+    if (window.setMusicVolume) {
+        window.setMusicVolume(timeStopBgmDucked ? settings.musicVolume * TIME_STOP_BGM_VOLUME_FACTOR : settings.musicVolume);
+    }
 }
 
 function setSfxFromSliderX(x) {
@@ -666,7 +692,7 @@ function drawTimeStopHud() {
         ctx.save();
         ctx.shadowColor = "#9de7ff";
         ctx.shadowBlur = 28;
-        drawText(`TIME STOP ${Math.ceil(timeStopTimer / 1000)}s`, W / 2, H - 44, 34, "#bff5ff");
+        drawText(`TIME STOP ${(timeStopTimer / 1000).toFixed(1)}s`, W / 2, H - 44, 34, "#bff5ff");
         ctx.restore();
     } else if (timeStopCooldown > 0) {
         drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
