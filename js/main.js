@@ -28,6 +28,9 @@ const REQUIRED_HOLD_MS = 900;
 const COMBO_WINDOW_MS = 1300;
 const BASE_FRUIT_SCORE = 10;
 const COMBO_STEP = 4;
+const TIME_STOP_DURATION_MS = 2200;
+const TIME_STOP_COOLDOWN_MS = 5200;
+const TIME_STOP_SLOW_FACTOR = 0.04;
 
 const EFFECT_LEVELS = {
     low: {
@@ -132,6 +135,12 @@ let shopMessage = "";        // 商店提示信息文本
 let shopMessageTimer = 0;
 let comboEdgePulse = 0;
 let comboEdgeColor = "#7ef7c5";
+let timeStopTimer = 0;
+let timeStopCooldown = 0;
+let timeStopFlash = 0;
+let timeStopMessageTimer = 0;
+let timeStopX = W / 2;
+let timeStopY = H / 2;
 
 const shopItems = [
     { type: "item", text: "清屏道具 (¥50)", cost: 50, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
@@ -246,6 +255,52 @@ function saveShopData() {
 
 function resetSettingsHold() {
     settingsHold = settingsItems.map(() => 0);
+}
+
+function resetTimeStop() {
+    timeStopTimer = 0;
+    timeStopCooldown = 0;
+    timeStopFlash = 0;
+    timeStopMessageTimer = 0;
+}
+
+function updateTimeStopTimers(delta) {
+    if (timeStopTimer > 0) {
+        timeStopTimer = Math.max(0, timeStopTimer - delta);
+    }
+    if (timeStopCooldown > 0) {
+        timeStopCooldown = Math.max(0, timeStopCooldown - delta);
+    }
+    if (timeStopFlash > 0) {
+        timeStopFlash = Math.max(0, timeStopFlash - delta / 380);
+    }
+    if (timeStopMessageTimer > 0) {
+        timeStopMessageTimer = Math.max(0, timeStopMessageTimer - delta);
+    }
+}
+
+function triggerTimeStop(x, y) {
+    if (timeStopTimer > 0 || timeStopCooldown > 0) {
+        return false;
+    }
+    timeStopTimer = TIME_STOP_DURATION_MS;
+    timeStopCooldown = TIME_STOP_COOLDOWN_MS;
+    timeStopFlash = 1;
+    timeStopMessageTimer = 1050;
+    timeStopX = clamp(x, 0, W);
+    timeStopY = clamp(y, 0, H);
+    comboEdgePulse = Math.max(comboEdgePulse, 0.7);
+    comboEdgeColor = "#9de7ff";
+    if (window.playSound) window.playSound("ui");
+    return true;
+}
+
+function consumeSnapTrigger() {
+    if (!window.snapTriggered) {
+        return false;
+    }
+    window.snapTriggered = false;
+    return triggerTimeStop(window.snapX || pointerX, window.snapY || pointerY);
 }
 
 function resetCombo() {
@@ -551,6 +606,84 @@ function drawComboEdgeEffect() {
     ctx.shadowBlur = (12 + intensity * 22) * effectConfig.shadowScale;
     ctx.strokeRect(8, 8, W - 16, H - 16);
     ctx.restore();
+}
+
+function drawTimeStopEffect() {
+    if (timeStopTimer <= 0 && timeStopFlash <= 0) return;
+
+    const effectConfig = getEffectConfig();
+    const activeRatio = clamp(timeStopTimer / TIME_STOP_DURATION_MS, 0, 1);
+    const flashRatio = clamp(timeStopFlash, 0, 1);
+    const intensity = clamp(Math.max(activeRatio * 0.68, flashRatio) * (0.65 + effectConfig.shadowScale * 0.35), 0, 1);
+    const edgeSize = 90 + intensity * 95;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = `rgba(110, 210, 255, ${0.06 + intensity * 0.12})`;
+    ctx.fillRect(0, 0, W, H);
+
+    if (effectConfig.edgeEnabled) {
+        const radial = ctx.createRadialGradient(timeStopX, timeStopY, 0, timeStopX, timeStopY, 260 + flashRatio * 180);
+        radial.addColorStop(0, `rgba(190, 245, 255, ${0.34 * intensity})`);
+        radial.addColorStop(0.38, `rgba(95, 200, 255, ${0.16 * intensity})`);
+        radial.addColorStop(1, "rgba(95, 200, 255, 0)");
+        ctx.fillStyle = radial;
+        ctx.beginPath();
+        ctx.arc(timeStopX, timeStopY, 280 + flashRatio * 180, 0, Math.PI * 2);
+        ctx.fill();
+
+        const topGlow = ctx.createLinearGradient(0, 0, 0, edgeSize);
+        topGlow.addColorStop(0, `rgba(130, 225, 255, ${0.24 + intensity * 0.22})`);
+        topGlow.addColorStop(1, "rgba(130, 225, 255, 0)");
+        ctx.fillStyle = topGlow;
+        ctx.fillRect(0, 0, W, edgeSize);
+
+        const bottomGlow = ctx.createLinearGradient(0, H, 0, H - edgeSize);
+        bottomGlow.addColorStop(0, `rgba(130, 225, 255, ${0.20 + intensity * 0.18})`);
+        bottomGlow.addColorStop(1, "rgba(130, 225, 255, 0)");
+        ctx.fillStyle = bottomGlow;
+        ctx.fillRect(0, H - edgeSize, W, edgeSize);
+    }
+
+    ctx.strokeStyle = `rgba(190, 245, 255, ${0.32 + intensity * 0.48})`;
+    ctx.lineWidth = 2 + intensity * 5;
+    ctx.shadowColor = "#9de7ff";
+    ctx.shadowBlur = (16 + intensity * 24) * effectConfig.shadowScale;
+    ctx.strokeRect(10, 10, W - 20, H - 20);
+
+    if (flashRatio > 0) {
+        const ringProgress = 1 - flashRatio;
+        ctx.lineWidth = 4 + flashRatio * 5;
+        ctx.beginPath();
+        ctx.arc(timeStopX, timeStopY, 50 + ringProgress * 320, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawTimeStopHud() {
+    if (timeStopTimer > 0) {
+        ctx.save();
+        ctx.shadowColor = "#9de7ff";
+        ctx.shadowBlur = 28;
+        drawText(`TIME STOP ${Math.ceil(timeStopTimer / 1000)}s`, W / 2, H - 44, 34, "#bff5ff");
+        ctx.restore();
+    } else if (timeStopCooldown > 0) {
+        drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+    } else if (!window.cameraReady) {
+        drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
+    } else {
+        drawText("响指时停就绪", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
+    }
+
+    if (timeStopMessageTimer > 0) {
+        ctx.save();
+        ctx.globalAlpha = clamp(timeStopMessageTimer / 260, 0, 1);
+        ctx.shadowColor = "#9de7ff";
+        ctx.shadowBlur = 34;
+        drawText("SNAP FREEZE", W / 2, 236, 48, "#bff5ff");
+        ctx.restore();
+    }
 }
 
 function drawBackground() {
@@ -953,6 +1086,7 @@ function resetGame(mode) {
     gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
     resetComboStats();
+    resetTimeStop();
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -980,6 +1114,7 @@ function returnToMenu() {
     gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
     resetComboStats();
+    resetTimeStop();
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
     }
@@ -1345,9 +1480,16 @@ function updatePlaying(delta, input) {
         return;
     }
 
-    updateComboTimers(delta);
+    consumeSnapTrigger();
+    updateTimeStopTimers(delta);
 
-    if (chosenMode === MODES.zen || chosenMode === MODES.arcade) {
+    const timeStopped = timeStopTimer > 0;
+    const simulationDelta = timeStopped ? delta * TIME_STOP_SLOW_FACTOR : delta;
+    const comboDelta = timeStopped ? delta * 0.12 : delta;
+
+    updateComboTimers(comboDelta);
+
+    if (!timeStopped && (chosenMode === MODES.zen || chosenMode === MODES.arcade)) {
         remainingTime -= delta / 1000;
         if (remainingTime <= 0) {
             gameState = GAME.GAMEOVER;
@@ -1361,9 +1503,11 @@ function updatePlaying(delta, input) {
         trail.shift();
     }
 
-    spawnFruit(delta / 16.67);
+    if (!timeStopped) {
+        spawnFruit(delta / 16.67);
+    }
 
-    fruits.forEach((fruit) => fruit.update(delta / 16.67));
+    fruits.forEach((fruit) => fruit.update(simulationDelta / 16.67));
 
     fruits.forEach((fruit) => {
         if (!fruit.alive) {
@@ -1431,15 +1575,16 @@ function updatePlaying(delta, input) {
     slices = slices.filter((slice) => slice.life > 0);
     splats = splats.filter((splat) => splat.alpha > 0);
 
-    particles.forEach((particle) => particle.update(delta / 16.67));
-    slices.forEach((slice) => slice.update(delta / 16.67));
-    splats.forEach((splat) => splat.update(delta / 16.67));
+    particles.forEach((particle) => particle.update(simulationDelta / 16.67));
+    slices.forEach((slice) => slice.update(simulationDelta / 16.67));
+    splats.forEach((splat) => splat.update(simulationDelta / 16.67));
 
     drawTrail();
     fruits.forEach((fruit) => fruit.draw());
     slices.forEach((slice) => slice.draw());
     particles.forEach((particle) => particle.draw());
     splats.forEach((splat) => splat.draw());
+    drawTimeStopEffect();
     comboEffects.forEach((effect) => effect.draw());
     drawComboEdgeEffect();
 
@@ -1447,6 +1592,7 @@ function updatePlaying(delta, input) {
     drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
     drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
     drawComboHud();
+    drawTimeStopHud();
     if (chosenMode === MODES.classic) {
         drawText(`Lives: ${"❤".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
     } else {
@@ -1531,6 +1677,9 @@ function loop(timestamp) {
     const input = getInputPosition();
 
     drawBackground();
+    if (gameState !== GAME.PLAYING && window.snapTriggered) {
+        window.snapTriggered = false;
+    }
 
     if (gameState === GAME.MENU) {
         updateMenu(delta, input);
