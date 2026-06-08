@@ -25,6 +25,44 @@ const MODES = {
 };
 
 const REQUIRED_HOLD_MS = 900;
+const COMBO_WINDOW_MS = 1300;
+const BASE_FRUIT_SCORE = 10;
+const COMBO_STEP = 4;
+
+const EFFECT_LEVELS = {
+    low: {
+        label: "低",
+        maxEffects: 4,
+        shardCap: 6,
+        shardBase: 3,
+        shadowScale: 0.35,
+        edgeEnabled: false,
+        burstEnabled: true,
+        passiveEdge: false,
+    },
+    medium: {
+        label: "中",
+        maxEffects: 8,
+        shardCap: 12,
+        shardBase: 4,
+        shadowScale: 0.62,
+        edgeEnabled: true,
+        burstEnabled: true,
+        passiveEdge: false,
+    },
+    high: {
+        label: "高",
+        maxEffects: 14,
+        shardCap: 20,
+        shardBase: 6,
+        shadowScale: 1,
+        edgeEnabled: true,
+        burstEnabled: true,
+        passiveEdge: true,
+    },
+};
+
+const EFFECT_LEVEL_ORDER = ["low", "medium", "high"];
 
 // 将原本的 menuItems 替换为以下代码：
 const menuItems = [
@@ -39,7 +77,8 @@ const settingsItems = [
     { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 220, color: "#7ef7c5" },
     { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 320, color: "#6db8ff" },
     { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 420, color: "#ffd166" },
-    { action: "back", text: () => "返回菜单", x: W / 2, y: 520, color: "#dba4ff" },
+    { action: "cycleEffects", text: () => `特效强度：${getEffectConfig().label}`, x: W / 2, y: 500, color: "#ff9f1c" },
+    { action: "back", text: () => "返回菜单", x: W / 2, y: 550, color: "#dba4ff" },
 ];
 
 const gameoverItems = [
@@ -52,10 +91,16 @@ let chosenMode = MODES.classic;
 let score = 0;
 let lives = 3;
 let remainingTime = 0;
+let comboCount = 0;
+let comboTimer = 0;
+let bestCombo = 0;
+let comboMessage = "";
+let comboMessageTimer = 0;
 let fruits = [];
 let particles = [];
 let slices = [];
 let splats = [];
+let comboEffects = [];
 let trail = [];
 let menuHold = [0, 0, 0, 0,0];
 let gameoverHold = [0, 0];
@@ -68,7 +113,7 @@ let pointerX = mouseX;
 let pointerY = mouseY;
 let lastInputWasHand = false;
 let usingMouse = false;
-let settingsHold = [0, 0, 0, 0];
+let settingsHold = settingsItems.map(() => 0);
 let settingsSliderDragging = false;
 let settingsSliderDragSource = null;
 let settingsSliderDragTarget = null; // "sensitivity" | "music" | "sfx"
@@ -85,6 +130,8 @@ let shopHold = [0, 0, 0, 0]; // 控制商店商品的长按购买
 let shopExitHold = 0; 
 let shopMessage = "";        // 商店提示信息文本
 let shopMessageTimer = 0;
+let comboEdgePulse = 0;
+let comboEdgeColor = "#7ef7c5";
 
 const shopItems = [
     { type: "item", text: "清屏道具 (¥50)", cost: 50, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
@@ -197,6 +244,91 @@ function saveShopData() {
     localStorage.setItem("fn_current_color", currentColor);
 }
 
+function resetSettingsHold() {
+    settingsHold = settingsItems.map(() => 0);
+}
+
+function resetCombo() {
+    comboCount = 0;
+    comboTimer = 0;
+    comboMessage = "";
+    comboMessageTimer = 0;
+    comboEdgePulse = 0;
+}
+
+function resetComboStats() {
+    resetCombo();
+    bestCombo = 0;
+    comboMessage = "";
+    comboMessageTimer = 0;
+    comboEffects = [];
+}
+
+function updateComboTimers(delta) {
+    if (comboTimer > 0) {
+        comboTimer = Math.max(0, comboTimer - delta);
+        if (comboTimer === 0) {
+            comboCount = 0;
+        }
+    }
+    if (comboMessageTimer > 0) {
+        comboMessageTimer = Math.max(0, comboMessageTimer - delta);
+    }
+    comboEdgePulse = Math.max(0, comboEdgePulse - delta / 620);
+    comboEffects = comboEffects.filter((effect) => effect.life > 0);
+    comboEffects.forEach((effect) => effect.update(delta / 16.67));
+}
+
+function getComboMultiplierForCount(count) {
+    if (count < COMBO_STEP) return 1;
+    return Math.floor(count / COMBO_STEP) + 1;
+}
+
+function getComboMultiplier() {
+    return getComboMultiplierForCount(comboCount);
+}
+
+function getComboColor(count = comboCount) {
+    const multiplier = getComboMultiplierForCount(count);
+    if (multiplier >= 30) return "#ff3b6b";
+    if (multiplier >= 20) return "#ff7ab8";
+    if (multiplier >= 10) return "#ff9f1c";
+    if (multiplier >= 5) return "#ffd166";
+    if (multiplier >= 3) return "#dba4ff";
+    return "#7ef7c5";
+}
+
+function registerComboHit(x, y) {
+    comboCount = comboTimer > 0 ? comboCount + 1 : 1;
+    comboTimer = COMBO_WINDOW_MS;
+    bestCombo = Math.max(bestCombo, comboCount);
+
+    const multiplier = getComboMultiplier();
+    const gainedScore = BASE_FRUIT_SCORE * multiplier;
+    const comboColor = getComboColor();
+
+    if (comboCount >= 2) {
+        comboMessage = `${comboCount} COMBO x${multiplier}`;
+        comboMessageTimer = 720;
+    }
+
+    const effectConfig = getEffectConfig();
+    if (comboCount >= 2 && effectConfig.burstEnabled) {
+        comboEffects.push(new ComboBurst(x, y, comboCount, multiplier, comboColor));
+        if (comboEffects.length > effectConfig.maxEffects) {
+            comboEffects.splice(0, comboEffects.length - effectConfig.maxEffects);
+        }
+    }
+
+    if (multiplier >= 2 && effectConfig.edgeEnabled) {
+        const milestoneBoost = comboCount % COMBO_STEP === 0 ? 0.34 : 0;
+        comboEdgePulse = Math.min(1, Math.max(comboEdgePulse, 0.20 + Math.min(multiplier, 12) * 0.055 + milestoneBoost));
+        comboEdgeColor = comboColor;
+    }
+
+    return gainedScore;
+}
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
@@ -207,9 +339,17 @@ function distance(ax, ay, bx, by) {
 
 function getSettingsState() {
     if (!window.settings) {
-        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8 };
+        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+    }
+    if (!EFFECT_LEVELS[window.settings.effectLevel]) {
+        window.settings.effectLevel = "medium";
     }
     return window.settings;
+}
+
+function getEffectConfig() {
+    const settings = getSettingsState();
+    return EFFECT_LEVELS[settings.effectLevel] || EFFECT_LEVELS.medium;
 }
 
 function applySettingsState() {
@@ -276,6 +416,16 @@ function toggleSetting(key) {
     saveSettings();
 }
 
+function cycleEffectLevel() {
+    const settings = getSettingsState();
+    const currentIndex = EFFECT_LEVEL_ORDER.indexOf(settings.effectLevel);
+    const nextIndex = currentIndex === -1 ? 1 : (currentIndex + 1) % EFFECT_LEVEL_ORDER.length;
+    settings.effectLevel = EFFECT_LEVEL_ORDER[nextIndex];
+    comboEffects = [];
+    comboEdgePulse = 0;
+    saveSettings();
+}
+
 function drawText(text, x, y, size = 48, color = "#ffffff", align = "center") {
     ctx.save();
     ctx.fillStyle = color;
@@ -315,6 +465,91 @@ function drawLoadingArc(centerX, centerY, radius, progress, color) {
     ctx.beginPath();
     ctx.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress), false);
     ctx.stroke();
+    ctx.restore();
+}
+
+function drawComboHud() {
+    const comboColor = getComboColor();
+    const multiplier = getComboMultiplier();
+    const effectConfig = getEffectConfig();
+
+    if (comboCount > 0) {
+        const width = 230;
+        const height = 40;
+        const left = W / 2 - width / 2;
+        const top = 106;
+        const progress = clamp(comboTimer / COMBO_WINDOW_MS, 0, 1);
+
+        drawRoundedRect(left, top, width, height, 18, "rgba(3, 8, 16, 0.48)", "rgba(255,255,255,0.12)");
+        ctx.save();
+        ctx.shadowColor = comboColor;
+        ctx.shadowBlur = Math.min(28, (6 + multiplier * 2.4) * effectConfig.shadowScale);
+        drawText(`${comboCount} Combo  x${multiplier}`, W / 2, top + 18, 22, comboColor);
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.14)";
+        ctx.fillRect(left + 22, top + 30, width - 44, 5);
+        ctx.fillStyle = comboColor;
+        ctx.fillRect(left + 22, top + 30, (width - 44) * progress, 5);
+        ctx.restore();
+    }
+
+    if (comboMessageTimer > 0 && comboMessage) {
+        ctx.save();
+        ctx.globalAlpha = clamp(comboMessageTimer / 180, 0, 1);
+        ctx.shadowColor = comboColor;
+        ctx.shadowBlur = 22 * effectConfig.shadowScale;
+        drawText(comboMessage, W / 2, 182, comboCount >= 12 ? 52 : 42, comboColor);
+        ctx.restore();
+    }
+}
+
+function drawComboEdgeEffect() {
+    const effectConfig = getEffectConfig();
+    if (!effectConfig.edgeEnabled) return;
+
+    const multiplier = getComboMultiplier();
+    const passiveGlow = effectConfig.passiveEdge && multiplier >= 2 ? 0.12 + Math.min(0.30, multiplier * 0.018) : 0;
+    const intensity = clamp(Math.max(comboEdgePulse, passiveGlow), 0, 1);
+    if (intensity <= 0) return;
+
+    const rgb = hexToRgb(comboEdgeColor);
+    const edgeSize = 70 + intensity * 90;
+    const alpha = 0.12 + intensity * 0.30;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+
+    const topGlow = ctx.createLinearGradient(0, 0, 0, edgeSize);
+    topGlow.addColorStop(0, `rgba(${rgb}, ${alpha})`);
+    topGlow.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = topGlow;
+    ctx.fillRect(0, 0, W, edgeSize);
+
+    const bottomGlow = ctx.createLinearGradient(0, H, 0, H - edgeSize);
+    bottomGlow.addColorStop(0, `rgba(${rgb}, ${alpha})`);
+    bottomGlow.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = bottomGlow;
+    ctx.fillRect(0, H - edgeSize, W, edgeSize);
+
+    const leftGlow = ctx.createLinearGradient(0, 0, edgeSize, 0);
+    leftGlow.addColorStop(0, `rgba(${rgb}, ${alpha * 0.82})`);
+    leftGlow.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = leftGlow;
+    ctx.fillRect(0, 0, edgeSize, H);
+
+    const rightGlow = ctx.createLinearGradient(W, 0, W - edgeSize, 0);
+    rightGlow.addColorStop(0, `rgba(${rgb}, ${alpha * 0.82})`);
+    rightGlow.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = rightGlow;
+    ctx.fillRect(W - edgeSize, 0, edgeSize, H);
+
+    ctx.strokeStyle = `rgba(${rgb}, ${0.24 + intensity * 0.46})`;
+    ctx.lineWidth = 3 + intensity * 5;
+    ctx.shadowColor = comboEdgeColor;
+    ctx.shadowBlur = (12 + intensity * 22) * effectConfig.shadowScale;
+    ctx.strokeRect(8, 8, W - 16, H - 16);
     ctx.restore();
 }
 
@@ -583,6 +818,95 @@ class Particle {
     }
 }
 
+class ComboBurst {
+    constructor(x, y, count, multiplier, color) {
+        const effectConfig = getEffectConfig();
+        this.x = x;
+        this.y = y;
+        this.count = count;
+        this.multiplier = multiplier;
+        this.color = color;
+        this.rgb = hexToRgb(color);
+        this.effectLevel = getSettingsState().effectLevel;
+        this.shadowScale = effectConfig.shadowScale;
+        this.life = Math.round((26 + Math.min(multiplier, 12) * 1.6) * (effectConfig.shadowScale + 0.55));
+        this.maxLife = this.life;
+        this.radius = 20;
+        this.rotation = Math.random() * Math.PI * 2;
+        this.shards = [];
+
+        const shardCount = Math.min(effectConfig.shardCap, effectConfig.shardBase + Math.floor(multiplier * 0.9));
+        for (let i = 0; i < shardCount; i += 1) {
+            const angle = (Math.PI * 2 * i) / shardCount + Math.random() * 0.35;
+            const speed = 3 + Math.random() * (3 + Math.min(multiplier, 10) * 0.45);
+            this.shards.push({
+                x: 0,
+                y: 0,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                size: 3 + Math.random() * 5,
+            });
+        }
+    }
+
+    update(step = 1) {
+        this.life -= step;
+        this.radius += (3.2 + Math.min(this.multiplier, 12) * 0.25) * step;
+        this.rotation += 0.05 * step;
+
+        this.shards.forEach((shard) => {
+            shard.x += shard.vx * step;
+            shard.y += shard.vy * step;
+            shard.vx *= Math.pow(0.95, step);
+            shard.vy *= Math.pow(0.95, step);
+        });
+    }
+
+    draw() {
+        if (this.life <= 0) return;
+
+        const progress = clamp(1 - this.life / this.maxLife, 0, 1);
+        const alpha = 1 - progress;
+        const ringAlpha = Math.max(0, alpha * 0.75);
+        const textAlpha = Math.max(0, Math.min(1, alpha * 1.25));
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rotation);
+        ctx.strokeStyle = `rgba(${this.rgb}, ${ringAlpha})`;
+        ctx.lineWidth = 4 + Math.min(this.multiplier, 12) * 0.25;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = (12 + Math.min(this.multiplier, 14)) * this.shadowScale;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        if (this.effectLevel !== "low") {
+            ctx.beginPath();
+            ctx.arc(0, 0, this.radius * 0.55, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        this.shards.forEach((shard) => {
+            ctx.fillStyle = `rgba(${this.rgb}, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(shard.x, shard.y, shard.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.restore();
+
+        if (this.multiplier >= 2) {
+            ctx.save();
+            ctx.globalAlpha = textAlpha;
+            ctx.shadowColor = this.color;
+            ctx.shadowBlur = (12 + Math.min(this.multiplier, 14)) * this.shadowScale;
+            drawText(`x${this.multiplier}`, this.x, this.y - 42 - progress * 18, 24 + Math.min(this.multiplier, 20), this.color);
+            ctx.restore();
+        }
+    }
+}
+
 class SplatJuice {
     constructor(x, y, color) {
         this.x = x + Math.random() * 30 - 15;
@@ -625,9 +949,10 @@ function resetGame(mode) {
     slices = [];
     splats = [];
     trail = [];
-    menuHold = [0, 0, 0, 0];
-    gameoverHold = [0, 0];
+    menuHold = menuItems.map(() => 0);
+    gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
+    resetComboStats();
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -651,9 +976,10 @@ function returnToMenu() {
     slices = [];
     splats = [];
     trail = [];
-    menuHold = [0, 0, 0, 0];
-    gameoverHold = [0, 0];
+    menuHold = menuItems.map(() => 0);
+    gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
+    resetComboStats();
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
     }
@@ -780,7 +1106,7 @@ function updateMenu(delta, input) {
     if (trigger) {
         if (trigger.mode === "settings") {
             gameState = GAME.SETTINGS;
-            settingsHold = [0, 0, 0, 0];
+            resetSettingsHold();
             settingsSliderDragging = false;
             settingsSliderDragSource = null;
             settingsLatchedIndex = -1;
@@ -805,6 +1131,10 @@ function updateSettings(delta, input) {
     const muteY = 320;
     const cameraX = W - 110;
     const cameraY = 320;
+    const effectsX = centerX - 240;
+    const effectsY = 520;
+    const backX = centerX + 170;
+    const backY = 520;
 
     settingsItems[0].x = muteX;
     settingsItems[0].y = muteY;
@@ -812,6 +1142,10 @@ function updateSettings(delta, input) {
     settingsItems[1].y = cameraY;
     settingsItems[2].x = centerX;
     settingsItems[2].y = 390;
+    settingsItems[3].x = effectsX;
+    settingsItems[3].y = effectsY;
+    settingsItems[4].x = backX;
+    settingsItems[4].y = backY;
 
     const hoveredIndex = getHoveredIndex(settingsItems, input.x, input.y, 130);
     let trigger = null;
@@ -895,8 +1229,8 @@ function updateSettings(delta, input) {
                 trigger = null;
             }
         } else {
-            // 对于静音和摄像头开关，显示为右侧的小圆形控件
-            if (item.action === "toggleMute" || item.action === "togglePreview") {
+            // 对于静音、摄像头和特效强度，显示为小圆形控件
+            if (item.action === "toggleMute" || item.action === "togglePreview" || item.action === "cycleEffects") {
                 const cx = item.x;
                 const cy = item.y;
                 const r = 34;
@@ -921,12 +1255,21 @@ function updateSettings(delta, input) {
                 ctx.strokeStyle = hoveredToggle ? item.color : "rgba(255,255,255,0.12)";
                 ctx.stroke();
 
-                const stateVal = item.action === "toggleMute" ? (getSettingsState().muted ? 1 : 0) : (getSettingsState().showCameraPreview === false ? 0 : 1);
-                // inner indicator
-                ctx.beginPath();
-                ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
-                ctx.fillStyle = stateVal ? item.color : "rgba(255,255,255,0.12)";
-                ctx.fill();
+                if (item.action === "cycleEffects") {
+                    const level = getEffectConfig().label;
+                    ctx.fillStyle = item.color;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r * 0.56, 0, Math.PI * 2);
+                    ctx.fill();
+                    drawText(level, cx, cy + 1, 22, "#121826");
+                } else {
+                    const stateVal = item.action === "toggleMute" ? (getSettingsState().muted ? 1 : 0) : (getSettingsState().showCameraPreview === false ? 0 : 1);
+                    // inner indicator
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+                    ctx.fillStyle = stateVal ? item.color : "rgba(255,255,255,0.12)";
+                    ctx.fill();
+                }
                 ctx.restore();
 
                 drawLoadingArc(cx, cy + r + 10, 14, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
@@ -957,11 +1300,15 @@ function updateSettings(delta, input) {
         toggleSetting("muted");
         syncBgmForScene();
         settingsLatchedIndex = hoveredIndex;
-        settingsHold = [0, 0, 0, 0];
+        resetSettingsHold();
     } else if (trigger === "togglePreview") {
         toggleSetting("showCameraPreview");
         settingsLatchedIndex = hoveredIndex;
-        settingsHold = [0, 0, 0, 0];
+        resetSettingsHold();
+    } else if (trigger === "cycleEffects") {
+        cycleEffectLevel();
+        settingsLatchedIndex = hoveredIndex;
+        resetSettingsHold();
     } else if (trigger === "back") {
         returnToMenu();
         gameState = GAME.MENU;
@@ -969,7 +1316,7 @@ function updateSettings(delta, input) {
 
     if (hoveredIndex === -1) {
         settingsLatchedIndex = -1;
-        settingsHold = [0, 0, 0, 0];
+        resetSettingsHold();
         settingsSliderDragging = false;
         settingsSliderDragSource = null;
         settingsSliderDragTarget = null;
@@ -997,6 +1344,8 @@ function updatePlaying(delta, input) {
         returnToMenu();
         return;
     }
+
+    updateComboTimers(delta);
 
     if (chosenMode === MODES.zen || chosenMode === MODES.arcade) {
         remainingTime -= delta / 1000;
@@ -1033,6 +1382,7 @@ function updatePlaying(delta, input) {
                 }
 
                 if (fruit.type === "bomb") {
+                    resetCombo();
                     if (chosenMode === MODES.classic) {
                         gameState = GAME.GAMEOVER;
                         if (window.playGameOver) window.playGameOver();
@@ -1040,7 +1390,7 @@ function updatePlaying(delta, input) {
                         score = Math.max(0, score - 20);
                     }
                 } else {
-                    score += 10;
+                    score += registerComboHit(fruit.x, fruit.y);
                     money += 1;
                     saveShopData();
                     const palette = {
@@ -1062,12 +1412,15 @@ function updatePlaying(delta, input) {
 
         if (fruit.alive && fruit.y > H + 60 && fruit.vy > 0) {
             fruit.alive = false;
-            if (chosenMode === MODES.classic && fruit.type !== "bomb") {
-                lives -= 1;
-                if (window.playMiss) window.playMiss();
-                if (lives <= 0) {
-                    gameState = GAME.GAMEOVER;
-                    if (window.playGameOver) window.playGameOver();
+            if (fruit.type !== "bomb") {
+                resetCombo();
+                if (chosenMode === MODES.classic) {
+                    lives -= 1;
+                    if (window.playMiss) window.playMiss();
+                    if (lives <= 0) {
+                        gameState = GAME.GAMEOVER;
+                        if (window.playGameOver) window.playGameOver();
+                    }
                 }
             }
         }
@@ -1087,10 +1440,13 @@ function updatePlaying(delta, input) {
     slices.forEach((slice) => slice.draw());
     particles.forEach((particle) => particle.draw());
     splats.forEach((splat) => splat.draw());
+    comboEffects.forEach((effect) => effect.draw());
+    drawComboEdgeEffect();
 
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
-drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
+    drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
+    drawComboHud();
     if (chosenMode === MODES.classic) {
         drawText(`Lives: ${"❤".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
     } else {
@@ -1101,6 +1457,7 @@ if (input.fist) {
     if (!fistLatched && clearItems > 0) {
         fistLatched = true;
         clearItems -= 1;
+        resetCombo();
         
         // 播放爆炸音效
         if (window.playBomb) window.playBomb();
@@ -1123,9 +1480,13 @@ if (input.fist) {
 }
 
 function updateGameover(delta, input) {
+    const bestMultiplier = getComboMultiplierForCount(bestCombo);
+    const bestComboColor = getComboColor(bestCombo);
+
     drawRoundedRect(90, 105, W - 180, H - 210, 28, "rgba(3, 8, 16, 0.58)", "rgba(255,255,255,0.12)");
     drawText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "TIME UP!" : "GAME OVER", W / 2, 170, 62, "#ff6b6b");
     drawText(`Final Score: ${score}`, W / 2, 238, 38, "#ffffff");
+    drawText(`Best Combo: ${bestCombo}   Best x${bestMultiplier}`, W / 2, 288, 30, bestComboColor);
 
     let trigger = null;
     const hoveredIndexG = getHoveredIndex(gameoverItems, input.x, input.y, 95);
@@ -1232,10 +1593,12 @@ canvas.addEventListener("pointerdown", (event) => {
             const selected = menuItems[idx];
             if (selected.mode === "settings") {
                 gameState = GAME.SETTINGS;
-                settingsHold = [0, 0, 0, 0];
+                resetSettingsHold();
                 settingsSliderDragging = false;
                 settingsSliderDragSource = null;
                 settingsLatchedIndex = -1;
+            } else if (selected.mode === "shop") {
+                gameState = GAME.SHOP;
             } else {
                 resetGame(selected.mode);
             }
@@ -1250,19 +1613,21 @@ canvas.addEventListener("pointerdown", (event) => {
                 syncBgmForScene();
             } else if (action === "togglePreview") {
                 toggleSetting("showCameraPreview");
-                } else if (action === "sensitivitySlider") {
-                    settingsSliderDragging = true;
-                    settingsSliderDragSource = "mouse";
-                    // Determine which of the three sliders was clicked: sensitivity/music/sfx
-                    const item = settingsItems[idx];
-                    const spacing = 64;
-                    const relY = y - item.y;
-                    if (relY < -spacing / 2) settingsSliderDragTarget = "sensitivity";
-                    else if (relY > spacing / 2) settingsSliderDragTarget = "sfx";
-                    else settingsSliderDragTarget = "music";
-                    if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(x);
-                    else if (settingsSliderDragTarget === "music") setMusicFromSliderX(x);
-                    else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(x);
+            } else if (action === "cycleEffects") {
+                cycleEffectLevel();
+            } else if (action === "sensitivitySlider") {
+                settingsSliderDragging = true;
+                settingsSliderDragSource = "mouse";
+                // Determine which of the three sliders was clicked: sensitivity/music/sfx
+                const item = settingsItems[idx];
+                const spacing = 64;
+                const relY = y - item.y;
+                if (relY < -spacing / 2) settingsSliderDragTarget = "sensitivity";
+                else if (relY > spacing / 2) settingsSliderDragTarget = "sfx";
+                else settingsSliderDragTarget = "music";
+                if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(x);
+                else if (settingsSliderDragTarget === "music") setMusicFromSliderX(x);
+                else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(x);
             } else if (action === "back") {
                 returnToMenu();
                 gameState = GAME.MENU;
@@ -1302,10 +1667,13 @@ window.addEventListener("load", () => {
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = localStorage.getItem("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8 };
+    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
+    if (!EFFECT_LEVELS[s.effectLevel]) {
+        s.effectLevel = "medium";
+    }
     window.settings = s;
     applySettingsState();
     saveSettings();
