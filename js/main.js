@@ -15,6 +15,7 @@ const GAME = {
     SETTINGS: 1,
     PLAYING: 2,
     GAMEOVER: 3,
+    SHOP: 4,
 };
 
 const MODES = {
@@ -25,11 +26,13 @@ const MODES = {
 
 const REQUIRED_HOLD_MS = 900;
 
+// 将原本的 menuItems 替换为以下代码：
 const menuItems = [
     { text: "经典模式", mode: MODES.classic, x: W / 2, y: 220, color: "#7ef7c5" },
     { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 320, color: "#6db8ff" },
     { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 420, color: "#dba4ff" },
     { text: "设置", mode: "settings", x: W / 2, y: 520, color: "#ffd166" },
+    { text: "商店", mode: "shop", x: W - 160, y: H - 50, color: "#ff9f1c" }, // 移动到右下角
 ];
 
 const settingsItems = [
@@ -54,7 +57,7 @@ let particles = [];
 let slices = [];
 let splats = [];
 let trail = [];
-let menuHold = [0, 0, 0, 0];
+let menuHold = [0, 0, 0, 0,0];
 let gameoverHold = [0, 0];
 let playExitHold = 0;
 let mouseX = W / 2;
@@ -70,6 +73,129 @@ let settingsSliderDragging = false;
 let settingsSliderDragSource = null;
 let settingsSliderDragTarget = null; // "sensitivity" | "music" | "sfx"
 let settingsLatchedIndex = -1;
+// 金钱与商店数据
+let money = parseInt(localStorage.getItem("fn_money") || "0");
+let clearItems = parseInt(localStorage.getItem("fn_clear_items") || "0");
+let unlockedColors = JSON.parse(localStorage.getItem("fn_colors") || '["#cff4ff"]'); // 默认初始颜色
+let currentColor = localStorage.getItem("fn_current_color") || "#cff4ff";
+
+// 状态控制
+let fistLatched = false; // 用于防止长按拳头触发多次清屏
+let shopHold = [0, 0, 0, 0]; // 控制商店商品的长按购买
+let shopExitHold = 0; 
+let shopMessage = "";        // 商店提示信息文本
+let shopMessageTimer = 0;
+
+const shopItems = [
+    { type: "item", text: "清屏道具 (¥50)", cost: 50, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
+    { type: "color", text: "红色刀刃 (¥100)", cost: 100, value: "#ff4b4b", x: W / 2 + 200, y: 250, color: "#ff4b4b" },
+    { type: "color", text: "金色刀刃 (¥150)", cost: 150, value: "#ffd166", x: W / 2 - 200, y: 380, color: "#ffd166" },
+    { type: "color", text: "绿色刀刃 (¥150)", cost: 150, value: "#7ef7c5", x: W / 2 + 200, y: 380, color: "#7ef7c5" },
+];
+
+function updateShop(delta, input) {
+    drawText("商 店", W / 2, 88, 58, "#ffffff");
+    drawText(`💰 当前金币: ${money}   |   💣 清屏道具: ${clearItems}`, W / 2, 150, 24, "#ffd166");
+    
+    // 返回按钮
+    const exitLeft = W / 2 - 60, exitTop = H - 90, exitWidth = 120, exitHeight = 50;
+    const exitHovered = input.x >= exitLeft && input.x <= exitLeft + exitWidth && input.y >= exitTop && input.y <= exitTop + exitHeight;
+    if (exitHovered) shopExitHold = Math.min(REQUIRED_HOLD_MS, shopExitHold + delta);
+    else shopExitHold = Math.max(0, shopExitHold - delta * 2);
+    
+    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", exitHovered ? "#ffb84d" : "rgba(255,255,255,0.12)");
+    drawText("返回", exitLeft + exitWidth / 2, exitTop + exitHeight / 2, 24, exitHovered ? "#ffb84d" : "#ffffff");
+    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, shopExitHold / REQUIRED_HOLD_MS, "#ffb84d");
+    
+    if (shopExitHold >= REQUIRED_HOLD_MS) {
+        returnToMenu(); // 返回菜单
+        return;
+    }
+
+    // 绘制并判定商店物品
+    let hoveredIndex = -1;
+    let hoveredDist = Infinity;
+    shopItems.forEach((item, index) => {
+        const dist = distance(input.x, input.y, item.x, item.y);
+        if (dist <= 100 && dist < hoveredDist) {
+            hoveredDist = dist;
+            hoveredIndex = index;
+        }
+    });
+
+    shopItems.forEach((item, index) => {
+        const hovered = index === hoveredIndex;
+        if (hovered) {
+            shopHold[index] = Math.min(REQUIRED_HOLD_MS, shopHold[index] + delta);
+        } else {
+            shopHold[index] = Math.max(0, shopHold[index] - delta * 2);
+        }
+        
+        let displayStr = item.text;
+        let isBought = false;
+        
+        // 判断饰品是否已经解锁或装备
+        if (item.type === "color") {
+            isBought = unlockedColors.includes(item.value);
+            if (isBought) displayStr = currentColor === item.value ? "已装备" : "装备";
+        }
+        
+        const canAfford = money >= item.cost;
+        const color = (!isBought && !canAfford) ? "#666666" : item.color; // 买不起显示为灰色
+        
+        drawText(displayStr, item.x, item.y, 24, color);
+        drawLoadingArc(item.x, item.y, 70, shopHold[index] / REQUIRED_HOLD_MS, color);
+        
+        // 判定长按购买/装备成功
+        if (shopHold[index] >= REQUIRED_HOLD_MS) {
+            shopHold[index] = 0; // 重置进度条
+            
+            if (item.type === "item") {
+                if (money >= item.cost) {
+                    money -= item.cost;
+                    clearItems += 1;
+                    if (window.playSound) window.playSound("ui");
+                } else if (window.playSound) window.playSound("miss");
+            } else if (item.type === "color") {
+                if (isBought) {
+                    currentColor = item.value; // 切换装备
+                    if (window.playSound) window.playSound("ui");
+                } else if (money >= item.cost) {
+                    money -= item.cost; // 购买并装备
+                    unlockedColors.push(item.value);
+                    currentColor = item.value;
+                    if (window.playSound) window.playSound("ui");
+                } else if (window.playSound) window.playSound("miss");
+            }
+            saveShopData();
+        }
+    });
+    if (shopMessageTimer > 0) {
+        shopMessageTimer -= delta; // 根据帧时间递减
+        // 让提示栏在最后 300 毫秒有一个平滑的淡出消失效果
+        const alpha = Math.max(0, Math.min(1, shopMessageTimer / 300)); 
+        
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        
+        const msgWidth = 320;
+        const msgHeight = 56;
+        const msgX = W / 2 - msgWidth / 2;
+        const msgY = H - 160; // 悬浮在返回按钮的上方
+        
+        // 画一个带红色边框的半透明警示框
+        drawRoundedRect(msgX, msgY, msgWidth, msgHeight, 15, "rgba(255, 75, 75, 0.15)", "rgba(255, 75, 75, 0.8)");
+        drawText(shopMessage, W / 2, msgY + msgHeight / 2, 24, "#ff4b4b");
+        
+        ctx.restore();
+    }
+}
+function saveShopData() {
+    localStorage.setItem("fn_money", money);
+    localStorage.setItem("fn_clear_items", clearItems);
+    localStorage.setItem("fn_colors", JSON.stringify(unlockedColors));
+    localStorage.setItem("fn_current_color", currentColor);
+}
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -236,6 +362,32 @@ function drawTrail() {
     ctx.restore();
 }
 
+function hexToRgb(hex) {
+    let h = hex.replace('#', '');
+    if(h.length === 3) h = h.split('').map(c=>c+c).join('');
+    return `${parseInt(h.substring(0,2),16)}, ${parseInt(h.substring(2,4),16)}, ${parseInt(h.substring(4,6),16)}`;
+}
+
+function drawTrail() {
+    if (trail.length < 2) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    
+    // 获取当前装备的刀刃颜色
+    const rgbStr = hexToRgb(currentColor);
+
+    for (let i = 1; i < trail.length; i += 1) {
+        const alpha = i / trail.length;
+        // 注入当前颜色并保留原有的渐隐透明度效果
+        ctx.strokeStyle = `rgba(${rgbStr}, ${0.18 + alpha * 0.82})`; 
+        ctx.lineWidth = 3 + alpha * 10;
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
 function checkSlicePerfect(center, radius, start, end) {
     const dx = end.x - start.x;
     const dy = end.y - start.y;
@@ -632,7 +784,9 @@ function updateMenu(delta, input) {
             settingsSliderDragging = false;
             settingsSliderDragSource = null;
             settingsLatchedIndex = -1;
-        } else {
+        } else if (trigger.mode === "shop") { 
+            gameState = GAME.SHOP;
+        } else { 
             resetGame(trigger.mode);
         }
     }
@@ -887,6 +1041,8 @@ function updatePlaying(delta, input) {
                     }
                 } else {
                     score += 10;
+                    money += 1;
+                    saveShopData();
                     const palette = {
                         apple: { flesh: "rgba(255, 128, 128, 0.95)", skin: "rgba(255, 77, 77, 0.95)" },
                         orange: { flesh: "rgba(255, 214, 150, 0.95)", skin: "rgba(255, 159, 28, 0.95)" },
@@ -933,11 +1089,37 @@ function updatePlaying(delta, input) {
     splats.forEach((splat) => splat.draw());
 
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
+    drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
+drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
     if (chosenMode === MODES.classic) {
         drawText(`Lives: ${"❤".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
     } else {
         drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
+    // 攥拳一键清屏逻辑 (建议放在 updatePlaying 的开头或结尾部分)
+if (input.fist) {
+    if (!fistLatched && clearItems > 0) {
+        fistLatched = true;
+        clearItems -= 1;
+        
+        // 播放爆炸音效
+        if (window.playBomb) window.playBomb();
+        
+        // 销毁场上所有非炸弹水果
+        fruits.forEach(fruit => {
+            if (fruit.alive && fruit.type !== "bomb") {
+                fruit.alive = false;
+                score += 1;
+                money += 1;
+                // 此处你可自行决定是否调用 spawnParticles(fruit) 等特效
+            }
+        });
+        saveShopData();
+    }
+} else {
+    // 松开拳头时重置触发器
+    fistLatched = false; 
+}
 }
 
 function updateGameover(delta, input) {
@@ -998,7 +1180,9 @@ function loop(timestamp) {
     } else if (gameState === GAME.GAMEOVER) {
         updateGameover(delta, input);
     }
-
+    else if (gameState === GAME.SHOP) {
+    updateShop(delta, input);
+}
     drawPointer(input);
 
 
