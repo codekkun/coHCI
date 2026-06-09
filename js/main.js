@@ -146,10 +146,10 @@ let timeStopY = H / 2;
 let timeStopBgmDucked = false;
 
 const shopItems = [
-    { type: "item", text: "清屏道具 (¥50)", cost: 50, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
-    { type: "color", text: "红色刀刃 (¥100)", cost: 100, value: "#ff4b4b", x: W / 2 + 200, y: 250, color: "#ff4b4b" },
-    { type: "color", text: "金色刀刃 (¥150)", cost: 150, value: "#ffd166", x: W / 2 - 200, y: 380, color: "#ffd166" },
-    { type: "color", text: "绿色刀刃 (¥150)", cost: 150, value: "#7ef7c5", x: W / 2 + 200, y: 380, color: "#7ef7c5" },
+    { type: "item", text: "清屏道具 (¥20)", cost: 20, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
+    { type: "color", text: "红色刀刃 (¥50)", cost: 50, value: "#ff4b4b", x: W / 2 + 200, y: 250, color: "#ff4b4b" },
+    { type: "color", text: "金色刀刃 (¥50)", cost: 50, value: "#ffd166", x: W / 2 - 200, y: 380, color: "#ffd166" },
+    { type: "color", text: "绿色刀刃 (¥50)", cost: 50, value: "#7ef7c5", x: W / 2 + 200, y: 380, color: "#7ef7c5" },
 ];
 
 function updateShop(delta, input) {
@@ -1772,9 +1772,12 @@ canvas.addEventListener("pointerdown", (event) => {
                 settingsSliderDragging = false;
                 settingsSliderDragSource = null;
                 settingsLatchedIndex = -1;
-            } else if (selected.mode === "shop") {
+            } 
+            else if (selected.mode === "shop") { 
                 gameState = GAME.SHOP;
-            } else {
+                shopHold = [0, 0, 0, 0];
+                shopExitHold = 0;
+            }else {
                 resetGame(selected.mode);
             }
             return;
