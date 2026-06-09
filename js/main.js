@@ -24,7 +24,16 @@ const MODES = {
     arcade: 3,
 };
 
+const CARRY_ITEM = {
+    NONE: "none",
+    CLEAR: "clear",
+    TIME_STOP: "timeStop",
+};
+
 const REQUIRED_HOLD_MS = 900;
+const OPEN_HAND_CLEAR_HOLD_MS = 420;
+const GESTURE_INTERLOCK_MS = 700;
+const SNAP_BLOCK_REFRESH_MS = 220;
 const COMBO_WINDOW_MS = 1300;
 const BASE_FRUIT_SCORE = 10;
 const COMBO_STEP = 4;
@@ -71,11 +80,11 @@ const EFFECT_LEVEL_ORDER = ["low", "medium", "high"];
 
 // 将原本的 menuItems 替换为以下代码：
 const menuItems = [
-    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 220, color: "#7ef7c5" },
-    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 320, color: "#6db8ff" },
-    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 420, color: "#dba4ff" },
-    { text: "设置", mode: "settings", x: W / 2, y: 520, color: "#ffd166" },
-    { text: "商店", mode: "shop", x: W - 160, y: H - 50, color: "#ff9f1c" }, // 移动到右下角
+    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 266, width: 300, height: 64, color: "#7ef7c5" },
+    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 344, width: 300, height: 64, color: "#6db8ff" },
+    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 422, width: 300, height: 64, color: "#dba4ff" },
+    { text: "设置", mode: "settings", x: W / 2 - 110, y: 514, width: 210, height: 58, color: "#ffd166" },
+    { text: "商店", mode: "shop", x: W / 2 + 140, y: 514, width: 190, height: 58, color: "#ff9f1c" },
 ];
 
 const settingsItems = [
@@ -86,9 +95,21 @@ const settingsItems = [
     { action: "back", text: () => "返回菜单", x: W / 2, y: 550, color: "#dba4ff" },
 ];
 
+const settingsSliderRows = [
+    { target: "sensitivity", label: "灵敏度", y: 240 },
+    { target: "music", label: "音乐音量", y: 330 },
+    { target: "sfx", label: "音效音量", y: 420 },
+];
+
 const gameoverItems = [
     { text: "重新开始", action: "restart", x: W / 2 - 150, y: 405, color: "#7ef7c5" },
     { text: "返回菜单", action: "menu", x: W / 2 + 150, y: 405, color: "#ffd166" },
+];
+
+const loadoutOptions = [
+    { item: CARRY_ITEM.NONE, label: () => "不携带", x: W / 2 - 210, y: 178, width: 136, color: "#7ef7c5" },
+    { item: CARRY_ITEM.CLEAR, label: () => `清屏 x${clearItems}`, x: W / 2, y: 178, width: 154, color: "#ff6b6b" },
+    { item: CARRY_ITEM.TIME_STOP, label: () => `时停 x${timeStopItems}`, x: W / 2 + 210, y: 178, width: 154, color: "#9de7ff" },
 ];
 
 let gameState = GAME.MENU;
@@ -106,10 +127,18 @@ let particles = [];
 let slices = [];
 let splats = [];
 let comboEffects = [];
+let clearEffects = [];
 let trail = [];
 let menuHold = [0, 0, 0, 0,0];
+let loadoutHold = loadoutOptions.map(() => 0);
 let gameoverHold = [0, 0];
 let playExitHold = 0;
+let clearItemHold = 0;
+let openHandClearHold = 0;
+let openHandClearLatched = false;
+let openHandClearBlockedUntil = 0;
+let clearScreenFlash = 0;
+let clearScreenPulse = 0;
 let mouseX = W / 2;
 let mouseY = H / 2;
 let mouseMovedRecently = false;
@@ -124,14 +153,14 @@ let settingsSliderDragSource = null;
 let settingsSliderDragTarget = null; // "sensitivity" | "music" | "sfx"
 let settingsLatchedIndex = -1;
 // 金钱与商店数据
-let money = parseInt(localStorage.getItem("fn_money") || "0");
-let clearItems = parseInt(localStorage.getItem("fn_clear_items") || "0");
-let unlockedColors = JSON.parse(localStorage.getItem("fn_colors") || '["#cff4ff"]'); // 默认初始颜色
-let currentColor = localStorage.getItem("fn_current_color") || "#cff4ff";
+let money = readStoredInteger("fn_money", 0);
+let clearItems = readStoredInteger("fn_clear_items", 0);
+let timeStopItems = readStoredInteger("fn_time_stop_items", 0);
+let unlockedColors = readStoredColors(); // 默认初始颜色
+let currentColor = readStoredCurrentColor(unlockedColors);
+let carriedItem = CARRY_ITEM.NONE;
 
-// 状态控制
-let fistLatched = false; // 用于防止长按拳头触发多次清屏
-let shopHold = [0, 0, 0, 0]; // 控制商店商品的长按购买
+let shopHold = [0, 0, 0, 0, 0]; // 控制商店商品的长按购买
 let shopExitHold = 0; 
 let shopMessage = "";        // 商店提示信息文本
 let shopMessageTimer = 0;
@@ -146,18 +175,19 @@ let timeStopY = H / 2;
 let timeStopBgmDucked = false;
 
 const shopItems = [
-    { type: "item", text: "清屏道具 (¥20)", cost: 20, x: W / 2 - 200, y: 250, color: "#ff6b6b" },
-    { type: "color", text: "红色刀刃 (¥50)", cost: 50, value: "#ff4b4b", x: W / 2 + 200, y: 250, color: "#ff4b4b" },
-    { type: "color", text: "金色刀刃 (¥50)", cost: 50, value: "#ffd166", x: W / 2 - 200, y: 380, color: "#ffd166" },
-    { type: "color", text: "绿色刀刃 (¥50)", cost: 50, value: "#7ef7c5", x: W / 2 + 200, y: 380, color: "#7ef7c5" },
+    { type: "item", item: CARRY_ITEM.CLEAR, text: "清屏道具", detail: "¥20", cost: 20, x: W / 2 - 220, y: 230, width: 230, height: 76, color: "#ff6b6b" },
+    { type: "item", item: CARRY_ITEM.TIME_STOP, text: "时停道具", detail: "¥30", cost: 30, x: W / 2 + 220, y: 230, width: 230, height: 76, color: "#9de7ff" },
+    { type: "color", text: "红色刀刃", detail: "¥50", cost: 50, value: "#ff4b4b", x: W / 2 - 220, y: 342, width: 230, height: 76, color: "#ff4b4b" },
+    { type: "color", text: "金色刀刃", detail: "¥50", cost: 50, value: "#ffd166", x: W / 2 + 220, y: 342, width: 230, height: 76, color: "#ffd166" },
+    { type: "color", text: "绿色刀刃", detail: "¥50", cost: 50, value: "#7ef7c5", x: W / 2, y: 450, width: 230, height: 76, color: "#7ef7c5" },
 ];
 
 function updateShop(delta, input) {
     drawText("商 店", W / 2, 88, 58, "#ffffff");
-    drawText(`💰 当前金币: ${money}   |   💣 清屏道具: ${clearItems}`, W / 2, 150, 24, "#ffd166");
+    drawText(`💰 当前金币: ${money}   |   💣 清屏: ${clearItems}   |   ⏱ 时停: ${timeStopItems}`, W / 2, 150, 24, "#ffd166");
     
     // 返回按钮
-    const exitLeft = W / 2 - 60, exitTop = H - 90, exitWidth = 120, exitHeight = 50;
+    const exitLeft = W / 2 - 60, exitTop = H - 78, exitWidth = 120, exitHeight = 46;
     const exitHovered = input.x >= exitLeft && input.x <= exitLeft + exitWidth && input.y >= exitTop && input.y <= exitTop + exitHeight;
     if (exitHovered) shopExitHold = Math.min(REQUIRED_HOLD_MS, shopExitHold + delta);
     else shopExitHold = Math.max(0, shopExitHold - delta * 2);
@@ -172,15 +202,7 @@ function updateShop(delta, input) {
     }
 
     // 绘制并判定商店物品
-    let hoveredIndex = -1;
-    let hoveredDist = Infinity;
-    shopItems.forEach((item, index) => {
-        const dist = distance(input.x, input.y, item.x, item.y);
-        if (dist <= 100 && dist < hoveredDist) {
-            hoveredDist = dist;
-            hoveredIndex = index;
-        }
-    });
+    const hoveredIndex = getShopItemIndexAt(input.x, input.y);
 
     shopItems.forEach((item, index) => {
         const hovered = index === hoveredIndex;
@@ -192,18 +214,43 @@ function updateShop(delta, input) {
         
         let displayStr = item.text;
         let isBought = false;
+        let detailStr = item.detail;
         
         // 判断饰品是否已经解锁或装备
         if (item.type === "color") {
             isBought = unlockedColors.includes(item.value);
-            if (isBought) displayStr = currentColor === item.value ? "已装备" : "装备";
+            if (isBought) {
+                detailStr = currentColor === item.value ? "已装备" : "点击装备";
+            }
+        } else if (item.item === CARRY_ITEM.CLEAR) {
+            detailStr = `${item.detail}  库存 ${clearItems}`;
+        } else if (item.item === CARRY_ITEM.TIME_STOP) {
+            detailStr = `${item.detail}  库存 ${timeStopItems}`;
         }
         
         const canAfford = money >= item.cost;
-        const color = (!isBought && !canAfford) ? "#666666" : item.color; // 买不起显示为灰色
-        
-        drawText(displayStr, item.x, item.y, 24, color);
-        drawLoadingArc(item.x, item.y, 70, shopHold[index] / REQUIRED_HOLD_MS, color);
+        const color = (!isBought && !canAfford) ? "rgba(255,255,255,0.36)" : item.color; // 买不起显示为灰色
+        const bounds = getButtonBounds(item);
+        const fill = hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.065)";
+        const stroke = hovered ? color : "rgba(255,255,255,0.14)";
+
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 18, fill, stroke);
+
+        if (item.type === "color") {
+            ctx.save();
+            ctx.fillStyle = item.value;
+            ctx.beginPath();
+            ctx.arc(bounds.x + 26, item.y - 9, 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.45)";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        drawText(displayStr, item.x, item.y - 12, 22, color);
+        drawText(detailStr, item.x, item.y + 16, 16, isBought || canAfford ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,0.34)");
+        drawLoadingArc(bounds.x + bounds.width - 26, item.y, 14, shopHold[index] / REQUIRED_HOLD_MS, color);
         
         // 判定长按购买/装备成功
         if (shopHold[index] >= REQUIRED_HOLD_MS) {
@@ -212,7 +259,11 @@ function updateShop(delta, input) {
             if (item.type === "item") {
                 if (money >= item.cost) {
                     money -= item.cost;
-                    clearItems += 1;
+                    if (item.item === CARRY_ITEM.TIME_STOP) {
+                        timeStopItems += 1;
+                    } else {
+                        clearItems += 1;
+                    }
                     if (window.playSound) window.playSound("ui");
                 } else if (window.playSound) window.playSound("miss");
             } else if (item.type === "color") {
@@ -250,14 +301,187 @@ function updateShop(delta, input) {
     }
 }
 function saveShopData() {
-    localStorage.setItem("fn_money", money);
-    localStorage.setItem("fn_clear_items", clearItems);
-    localStorage.setItem("fn_colors", JSON.stringify(unlockedColors));
-    localStorage.setItem("fn_current_color", currentColor);
+    writeStoredValue("fn_money", money);
+    writeStoredValue("fn_clear_items", clearItems);
+    writeStoredValue("fn_time_stop_items", timeStopItems);
+    writeStoredValue("fn_colors", JSON.stringify(unlockedColors));
+    writeStoredValue("fn_current_color", currentColor);
+}
+
+function readStoredValue(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch (error) {
+        return null;
+    }
+}
+
+function writeStoredValue(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (error) {}
+}
+
+function readStoredInteger(key, fallback) {
+    const value = Number.parseInt(readStoredValue(key), 10);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function isHexColor(value) {
+    return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function readStoredColors() {
+    const fallback = ["#cff4ff"];
+    try {
+        const parsed = JSON.parse(readStoredValue("fn_colors") || "[]");
+        if (!Array.isArray(parsed)) return fallback;
+        const colors = parsed.filter(isHexColor);
+        if (!colors.includes(fallback[0])) colors.unshift(fallback[0]);
+        return Array.from(new Set(colors));
+    } catch (error) {
+        return fallback;
+    }
+}
+
+function readStoredCurrentColor(colors) {
+    const stored = readStoredValue("fn_current_color");
+    return isHexColor(stored) && colors.includes(stored) ? stored : colors[0];
 }
 
 function resetSettingsHold() {
     settingsHold = settingsItems.map(() => 0);
+}
+
+function resetShopState() {
+    shopHold = shopItems.map(() => 0);
+    shopExitHold = 0;
+    shopMessage = "";
+    shopMessageTimer = 0;
+}
+
+function enterShop() {
+    resetShopState();
+    gameState = GAME.SHOP;
+}
+
+function getItemCount(item) {
+    if (item === CARRY_ITEM.CLEAR) return clearItems;
+    if (item === CARRY_ITEM.TIME_STOP) return timeStopItems;
+    return Infinity;
+}
+
+function canCarryItem(item) {
+    return item === CARRY_ITEM.NONE || getItemCount(item) > 0;
+}
+
+function isClearItemCarried() {
+    return carriedItem === CARRY_ITEM.CLEAR && clearItems > 0;
+}
+
+function isTimeStopItemCarried() {
+    return carriedItem === CARRY_ITEM.TIME_STOP && timeStopItems > 0;
+}
+
+function normalizeCarriedItem() {
+    if (!canCarryItem(carriedItem)) {
+        carriedItem = CARRY_ITEM.NONE;
+    }
+}
+
+function setCarriedItem(item) {
+    if (!canCarryItem(item)) {
+        if (window.playSound) window.playSound("miss");
+        return false;
+    }
+    carriedItem = item;
+    loadoutHold = loadoutOptions.map(() => 0);
+    if (window.playSound) window.playSound("ui");
+    return true;
+}
+
+function resetLoadoutHold() {
+    loadoutHold = loadoutOptions.map(() => 0);
+}
+
+function getButtonBounds(item) {
+    return {
+        x: item.x - item.width / 2,
+        y: item.y - item.height / 2,
+        width: item.width,
+        height: item.height,
+    };
+}
+
+function pointInBounds(x, y, bounds) {
+    return x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
+}
+
+function getLoadoutBounds(option) {
+    return {
+        x: option.x - option.width / 2,
+        y: option.y - 22,
+        width: option.width,
+        height: 44,
+    };
+}
+
+function getLoadoutIndexAt(x, y) {
+    for (let i = 0; i < loadoutOptions.length; i += 1) {
+        const bounds = getLoadoutBounds(loadoutOptions[i]);
+        if (x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function getMenuItemIndexAt(x, y) {
+    for (let i = 0; i < menuItems.length; i += 1) {
+        if (pointInBounds(x, y, getButtonBounds(menuItems[i]))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function getShopItemIndexAt(x, y) {
+    for (let i = 0; i < shopItems.length; i += 1) {
+        if (pointInBounds(x, y, getButtonBounds(shopItems[i]))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function updateLoadoutSelector(delta, input) {
+    normalizeCarriedItem();
+    drawText("本局携带", W / 2, 158, 18, "rgba(255,255,255,0.58)");
+
+    const hoveredIndex = getLoadoutIndexAt(input.x, input.y);
+    loadoutOptions.forEach((option, index) => {
+        const hovered = index === hoveredIndex;
+        const selected = carriedItem === option.item;
+        const enabled = canCarryItem(option.item);
+        if (hovered && enabled) {
+            loadoutHold[index] = Math.min(REQUIRED_HOLD_MS, loadoutHold[index] + delta);
+        } else {
+            loadoutHold[index] = Math.max(0, loadoutHold[index] - delta * 2);
+        }
+
+        const bounds = getLoadoutBounds(option);
+        const color = enabled ? option.color : "rgba(255,255,255,0.34)";
+        const fill = selected ? "rgba(255,255,255,0.16)" : hovered && enabled ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)";
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, fill, selected ? option.color : "rgba(255,255,255,0.12)");
+        drawText(option.label(), bounds.x + 18, option.y - 1, 18, color, "left");
+        drawLoadingArc(bounds.x + bounds.width - 20, option.y, 12, loadoutHold[index] / REQUIRED_HOLD_MS, option.color);
+
+        if (loadoutHold[index] >= REQUIRED_HOLD_MS) {
+            setCarriedItem(option.item);
+        }
+    });
+
+    return hoveredIndex !== -1;
 }
 
 function setTimeStopBgmDucked(ducked) {
@@ -271,6 +495,18 @@ function setTimeStopBgmDucked(ducked) {
     const targetVolume = ducked && !settings.muted ? baseVolume * TIME_STOP_BGM_VOLUME_FACTOR : baseVolume;
     window.setMusicVolume(targetVolume);
     timeStopBgmDucked = ducked;
+}
+
+function lockSnapGesture(duration = GESTURE_INTERLOCK_MS) {
+    const until = performance.now() + duration;
+    window.gestureLockUntil = Math.max(Number(window.gestureLockUntil) || 0, until);
+    window.snapTriggered = false;
+}
+
+function lockOpenHandClear(duration = GESTURE_INTERLOCK_MS) {
+    openHandClearBlockedUntil = Math.max(openHandClearBlockedUntil, performance.now() + duration);
+    openHandClearHold = 0;
+    openHandClearLatched = true;
 }
 
 function resetTimeStop() {
@@ -316,15 +552,250 @@ function triggerTimeStop(x, y) {
     comboEdgeColor = "#9de7ff";
     setTimeStopBgmDucked(true);
     if (window.playSound) window.playSound(TIME_STOP_SOUND);
+    lockOpenHandClear();
     return true;
 }
 
-function consumeSnapTrigger() {
+function activateTimeStopItem(x, y) {
+    if (!isTimeStopItemCarried()) {
+        return false;
+    }
+    if (!triggerTimeStop(x, y)) {
+        return false;
+    }
+
+    timeStopItems = Math.max(0, timeStopItems - 1);
+    normalizeCarriedItem();
+    saveShopData();
+    return true;
+}
+
+function consumeSnapTrigger(input) {
     if (!window.snapTriggered) {
         return false;
     }
     window.snapTriggered = false;
-    return triggerTimeStop(window.snapX || pointerX, window.snapY || pointerY);
+    if (input.openHand || openHandClearHold > 0 || performance.now() < (Number(window.gestureLockUntil) || 0)) {
+        return false;
+    }
+    return activateTimeStopItem(window.snapX || pointerX, window.snapY || pointerY);
+}
+
+function getClearItemButtonBounds() {
+    return { x: W / 2 - 105, y: 62, width: 210, height: 38 };
+}
+
+function activateClearItem(source = "button") {
+    if (!isClearItemCarried()) return false;
+
+    clearItems -= 1;
+    clearItemHold = 0;
+    openHandClearHold = 0;
+    openHandClearLatched = source === "openHand";
+    resetCombo();
+    if (window.playBomb) window.playBomb();
+    if (source === "openHand" && window.playSound) {
+        window.playSound("bomb");
+        window.playSound("ui");
+    }
+
+    const clearedTargets = [];
+    fruits.forEach((fruit) => {
+        if (fruit.alive && fruit.type !== "bomb") {
+            clearedTargets.push({ x: fruit.x, y: fruit.y, type: fruit.type });
+            fruit.alive = false;
+            score += 1;
+            money += 1;
+        }
+    });
+    triggerClearItemEffects(pointerX, pointerY, clearedTargets, source);
+    normalizeCarriedItem();
+    saveShopData();
+    return true;
+}
+
+function updateClearItemControl(delta, input) {
+    const bounds = getClearItemButtonBounds();
+    const hovered = input.x >= bounds.x && input.x <= bounds.x + bounds.width && input.y >= bounds.y && input.y <= bounds.y + bounds.height;
+    const openHandBlocked = performance.now() < openHandClearBlockedUntil;
+    const clearReady = isClearItemCarried();
+    const openHandReady = input.openHand && clearReady && !openHandClearLatched && !openHandBlocked;
+
+    if (input.openHand && clearReady) {
+        lockSnapGesture(SNAP_BLOCK_REFRESH_MS);
+    }
+
+    if (hovered && clearReady) {
+        clearItemHold = Math.min(REQUIRED_HOLD_MS, clearItemHold + delta);
+    } else {
+        clearItemHold = Math.max(0, clearItemHold - delta * 2);
+    }
+
+    if (!input.openHand) {
+        if (!openHandBlocked) {
+            openHandClearLatched = false;
+        }
+        openHandClearHold = Math.max(0, openHandClearHold - delta * 2);
+    } else if (openHandReady) {
+        openHandClearHold = Math.min(OPEN_HAND_CLEAR_HOLD_MS, openHandClearHold + delta);
+    } else {
+        openHandClearHold = 0;
+    }
+
+    let clearActivated = false;
+    if (clearItemHold >= REQUIRED_HOLD_MS) {
+        clearActivated = activateClearItem("button");
+        if (clearActivated && input.openHand) {
+            openHandClearLatched = true;
+        }
+    }
+
+    if (!clearActivated && openHandClearHold >= OPEN_HAND_CLEAR_HOLD_MS) {
+        activateClearItem("openHand");
+    }
+
+    return hovered;
+}
+
+function drawClearItemButton(hovered) {
+    const bounds = getClearItemButtonBounds();
+    const active = isClearItemCarried();
+    const color = active ? "#ff6b6b" : "rgba(255,255,255,0.38)";
+
+    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, hovered && active ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.07)", hovered && active ? color : "rgba(255,255,255,0.12)");
+    drawText(`清屏道具: ${clearItems}`, W / 2, bounds.y + bounds.height / 2 - 1, 20, color);
+    drawLoadingArc(W / 2, bounds.y + bounds.height + 4, 16, clearItemHold / REQUIRED_HOLD_MS, color);
+}
+
+function drawTimeStopItemButton() {
+    const bounds = getClearItemButtonBounds();
+    const active = isTimeStopItemCarried();
+    const color = active ? "#9de7ff" : "rgba(255,255,255,0.38)";
+    const detail = timeStopCooldown > 0 ? `冷却 ${Math.ceil(timeStopCooldown / 1000)}s` : active ? "响指触发" : "未携带";
+    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, "rgba(255,255,255,0.07)", active ? "rgba(157,231,255,0.55)" : "rgba(255,255,255,0.12)");
+    drawText(`时停道具: ${timeStopItems}`, W / 2, bounds.y + bounds.height / 2 - 8, 18, color);
+    drawText(detail, W / 2, bounds.y + bounds.height / 2 + 11, 14, color);
+}
+
+function drawCarriedItemHud(clearHovered) {
+    if (carriedItem === CARRY_ITEM.CLEAR) {
+        drawClearItemButton(clearHovered);
+    } else if (carriedItem === CARRY_ITEM.TIME_STOP) {
+        drawTimeStopItemButton();
+    } else {
+        const bounds = getClearItemButtonBounds();
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
+        drawText("未携带道具", W / 2, bounds.y + bounds.height / 2 - 1, 18, "rgba(255,255,255,0.46)");
+    }
+}
+
+function drawOpenHandClearIndicator(input) {
+    if (!isClearItemCarried() || !input.hand || (!input.openHand && openHandClearHold <= 0)) {
+        return;
+    }
+
+    const progress = clamp(openHandClearHold / OPEN_HAND_CLEAR_HOLD_MS, 0, 1);
+    const alpha = input.openHand ? 0.9 : 0.35;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = clearItems > 0 ? "#ffb84d" : "rgba(255,255,255,0.45)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(input.x, input.y, 28, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+    ctx.stroke();
+
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 5; i += 1) {
+        const angle = -Math.PI * 0.9 + i * (Math.PI * 0.45);
+        const inner = 15;
+        const outer = input.openHand ? 30 : 24;
+        ctx.beginPath();
+        ctx.moveTo(input.x + Math.cos(angle) * inner, input.y + Math.sin(angle) * inner);
+        ctx.lineTo(input.x + Math.cos(angle) * outer, input.y + Math.sin(angle) * outer);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function getFruitPalette(type) {
+    return {
+        apple: { flesh: "rgba(255, 128, 128, 0.95)", skin: "rgba(255, 77, 77, 0.95)" },
+        orange: { flesh: "rgba(255, 214, 150, 0.95)", skin: "rgba(255, 159, 28, 0.95)" },
+        banana: { flesh: "rgba(255, 245, 176, 0.95)", skin: "rgba(255, 224, 102, 0.95)" },
+        watermelon: { flesh: "rgba(255, 115, 131, 0.95)", skin: "rgba(76, 175, 80, 0.95)" },
+    }[type] || { flesh: "rgba(255, 209, 102, 0.95)", skin: "rgba(255, 107, 107, 0.95)" };
+}
+
+function triggerClearItemEffects(x, y, targets, source) {
+    const effectLevel = getSettingsState().effectLevel;
+    const effectConfig = getEffectConfig();
+    const isOpenHand = source === "openHand";
+    const targetCap = effectLevel === "low" ? 5 : effectLevel === "medium" ? 10 : 16;
+    const particlesPerTarget = effectLevel === "low" ? 2 : effectLevel === "medium" ? 4 : 7;
+    const effectCap = Math.max(2, Math.ceil(effectConfig.maxEffects / 2));
+
+    clearScreenFlash = Math.max(clearScreenFlash, isOpenHand ? 1 : 0.72);
+    clearScreenPulse = Math.max(clearScreenPulse, isOpenHand ? 1 : 0.68);
+    clearEffects.push(new ClearWave(x, y, targets.length, source));
+    if (clearEffects.length > effectCap) {
+        clearEffects.splice(0, clearEffects.length - effectCap);
+    }
+
+    targets.slice(0, targetCap).forEach((target) => {
+        const palette = getFruitPalette(target.type);
+        splats.push(new SplatJuice(target.x, target.y, palette.flesh));
+        for (let i = 0; i < particlesPerTarget; i += 1) {
+            particles.push(new Particle(target.x, target.y, palette.skin));
+        }
+    });
+}
+
+function drawClearScreenEffect() {
+    const intensity = clamp(Math.max(clearScreenFlash, clearScreenPulse * 0.7), 0, 1);
+    if (intensity <= 0) {
+        return;
+    }
+
+    const effectConfig = getEffectConfig();
+    const edgeSize = 85 + intensity * 110;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = `rgba(255, 120, 70, ${0.06 + clearScreenFlash * 0.18})`;
+    ctx.fillRect(0, 0, W, H);
+
+    if (effectConfig.edgeEnabled) {
+        const topGlow = ctx.createLinearGradient(0, 0, 0, edgeSize);
+        topGlow.addColorStop(0, `rgba(255, 107, 107, ${0.22 + intensity * 0.24})`);
+        topGlow.addColorStop(1, "rgba(255, 107, 107, 0)");
+        ctx.fillStyle = topGlow;
+        ctx.fillRect(0, 0, W, edgeSize);
+
+        const bottomGlow = ctx.createLinearGradient(0, H, 0, H - edgeSize);
+        bottomGlow.addColorStop(0, `rgba(255, 184, 77, ${0.18 + intensity * 0.22})`);
+        bottomGlow.addColorStop(1, "rgba(255, 184, 77, 0)");
+        ctx.fillStyle = bottomGlow;
+        ctx.fillRect(0, H - edgeSize, W, edgeSize);
+
+        const leftGlow = ctx.createLinearGradient(0, 0, edgeSize, 0);
+        leftGlow.addColorStop(0, `rgba(255, 107, 107, ${0.16 + intensity * 0.18})`);
+        leftGlow.addColorStop(1, "rgba(255, 107, 107, 0)");
+        ctx.fillStyle = leftGlow;
+        ctx.fillRect(0, 0, edgeSize, H);
+
+        const rightGlow = ctx.createLinearGradient(W, 0, W - edgeSize, 0);
+        rightGlow.addColorStop(0, `rgba(255, 209, 102, ${0.16 + intensity * 0.18})`);
+        rightGlow.addColorStop(1, "rgba(255, 209, 102, 0)");
+        ctx.fillStyle = rightGlow;
+        ctx.fillRect(W - edgeSize, 0, edgeSize, H);
+    }
+
+    ctx.strokeStyle = `rgba(255, 184, 77, ${0.24 + intensity * 0.45})`;
+    ctx.lineWidth = 3 + intensity * 5;
+    ctx.shadowColor = "#ffb84d";
+    ctx.shadowBlur = (14 + intensity * 22) * effectConfig.shadowScale;
+    ctx.strokeRect(10, 10, W - 20, H - 20);
+    ctx.restore();
 }
 
 function resetCombo() {
@@ -356,6 +827,10 @@ function updateComboTimers(delta) {
     comboEdgePulse = Math.max(0, comboEdgePulse - delta / 620);
     comboEffects = comboEffects.filter((effect) => effect.life > 0);
     comboEffects.forEach((effect) => effect.update(delta / 16.67));
+    clearScreenFlash = Math.max(0, clearScreenFlash - delta / 420);
+    clearScreenPulse = Math.max(0, clearScreenPulse - delta / 680);
+    clearEffects = clearEffects.filter((effect) => effect.life > 0);
+    clearEffects.forEach((effect) => effect.update(delta / 16.67));
 }
 
 function getComboMultiplierForCount(count) {
@@ -449,7 +924,7 @@ function applySettingsState() {
 
 function saveSettings() {
     const settings = getSettingsState();
-    localStorage.setItem("cohci_settings", JSON.stringify(settings));
+    writeStoredValue("cohci_settings", JSON.stringify(settings));
 }
 
 function changeSensitivity(delta) {
@@ -488,6 +963,23 @@ function setSfxFromSliderX(x) {
     settings.sfxVolume = Math.round(ratio * 100) / 100;
     saveSettings();
     if (window.setSfxVolume) window.setSfxVolume(settings.sfxVolume);
+}
+
+function getSettingsSliderTargetAt(x, y) {
+    const left = W / 2 - 180;
+    const right = W / 2 + 180;
+    if (x < left || x > right) {
+        return null;
+    }
+
+    const row = settingsSliderRows.find((slider) => y >= slider.y - 28 && y <= slider.y + 28);
+    return row ? row.target : null;
+}
+
+function setSettingsSliderFromX(target, x) {
+    if (target === "sensitivity") setSensitivityFromSliderX(x);
+    else if (target === "music") setMusicFromSliderX(x);
+    else if (target === "sfx") setSfxFromSliderX(x);
 }
 
 function toggleSetting(key) {
@@ -696,10 +1188,12 @@ function drawTimeStopHud() {
         ctx.restore();
     } else if (timeStopCooldown > 0) {
         drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+    } else if (!isTimeStopItemCarried()) {
+        drawText("赛前携带时停道具后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.50)");
     } else if (!window.cameraReady) {
         drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
     } else {
-        drawText("响指时停就绪", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
+        drawText("响指使用时停道具", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
     }
 
     if (timeStopMessageTimer > 0) {
@@ -735,25 +1229,6 @@ function drawBackground() {
         ctx.arc(blob.x, blob.y, blob.r, 0, Math.PI * 2);
         ctx.fill();
     });
-}
-
-function drawTrail() {
-    if (trail.length < 2) {
-        return;
-    }
-
-    ctx.save();
-    ctx.lineCap = "round";
-    for (let i = 1; i < trail.length; i += 1) {
-        const alpha = i / trail.length;
-        ctx.strokeStyle = `rgba(207, 244, 255, ${0.18 + alpha * 0.82})`;
-        ctx.lineWidth = 3 + alpha * 10;
-        ctx.beginPath();
-        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
-        ctx.lineTo(trail[i].x, trail[i].y);
-        ctx.stroke();
-    }
-    ctx.restore();
 }
 
 function hexToRgb(hex) {
@@ -1066,6 +1541,84 @@ class ComboBurst {
     }
 }
 
+class ClearWave {
+    constructor(x, y, targetCount, source) {
+        const effectConfig = getEffectConfig();
+        const effectLevel = getSettingsState().effectLevel;
+        const isOpenHand = source === "openHand";
+        this.x = x;
+        this.y = y;
+        this.targetCount = targetCount;
+        this.source = source;
+        this.rgb = isOpenHand ? "255, 184, 77" : "255, 107, 107";
+        this.color = isOpenHand ? "#ffb84d" : "#ff6b6b";
+        this.shadowScale = effectConfig.shadowScale;
+        this.life = effectLevel === "low" ? 28 : effectLevel === "medium" ? 38 : 48;
+        this.maxLife = this.life;
+        this.ringCount = effectLevel === "low" ? 1 : effectLevel === "medium" ? 2 : 3;
+        this.shards = [];
+
+        const shardCount = effectLevel === "low" ? 6 : effectLevel === "medium" ? 12 : 20;
+        for (let i = 0; i < shardCount; i += 1) {
+            const angle = (Math.PI * 2 * i) / shardCount + Math.random() * 0.28;
+            const speed = 5 + Math.random() * (isOpenHand ? 8 : 5);
+            this.shards.push({
+                x: 0,
+                y: 0,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                size: 3 + Math.random() * 5,
+            });
+        }
+    }
+
+    update(step = 1) {
+        this.life -= step;
+        this.shards.forEach((shard) => {
+            shard.x += shard.vx * step;
+            shard.y += shard.vy * step;
+            shard.vx *= Math.pow(0.94, step);
+            shard.vy *= Math.pow(0.94, step);
+        });
+    }
+
+    draw() {
+        if (this.life <= 0) return;
+
+        const progress = clamp(1 - this.life / this.maxLife, 0, 1);
+        const alpha = 1 - progress;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.translate(this.x, this.y);
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = (18 + progress * 28) * this.shadowScale;
+
+        for (let i = 0; i < this.ringCount; i += 1) {
+            const offset = i * 46;
+            const radius = 44 + progress * (360 + offset);
+            ctx.strokeStyle = `rgba(${this.rgb}, ${Math.max(0, alpha * (0.74 - i * 0.16))})`;
+            ctx.lineWidth = 5 - i;
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        this.shards.forEach((shard) => {
+            ctx.fillStyle = `rgba(${this.rgb}, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(shard.x, shard.y, shard.size * alpha, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        if (this.source === "openHand") {
+            ctx.globalAlpha = Math.min(1, alpha * 1.2);
+            drawText("PALM CLEAR", 0, -58 - progress * 18, 28, "#ffdc8f");
+        }
+        ctx.restore();
+    }
+}
+
 class SplatJuice {
     constructor(x, y, color) {
         this.x = x + Math.random() * 30 - 15;
@@ -1100,6 +1653,7 @@ class SplatJuice {
 }
 
 function resetGame(mode) {
+    normalizeCarriedItem();
     chosenMode = mode;
     score = 0;
     lives = 3;
@@ -1107,10 +1661,19 @@ function resetGame(mode) {
     particles = [];
     slices = [];
     splats = [];
+    clearEffects = [];
+    clearScreenFlash = 0;
+    clearScreenPulse = 0;
     trail = [];
     menuHold = menuItems.map(() => 0);
+    resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
+    clearItemHold = 0;
+    openHandClearHold = 0;
+    openHandClearLatched = false;
+    openHandClearBlockedUntil = 0;
+    window.gestureLockUntil = 0;
     resetComboStats();
     resetTimeStop();
 
@@ -1135,10 +1698,19 @@ function returnToMenu() {
     particles = [];
     slices = [];
     splats = [];
+    clearEffects = [];
+    clearScreenFlash = 0;
+    clearScreenPulse = 0;
     trail = [];
     menuHold = menuItems.map(() => 0);
+    resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
     playExitHold = 0;
+    clearItemHold = 0;
+    openHandClearHold = 0;
+    openHandClearLatched = false;
+    openHandClearBlockedUntil = 0;
+    window.gestureLockUntil = 0;
     resetComboStats();
     resetTimeStop();
     if (ui.cameraStatus) {
@@ -1207,7 +1779,14 @@ function getInputPosition() {
 
     lastInputWasHand = cameraActive;
 
-    return { x: pointerX, y: pointerY, active, fist: Boolean(window.isFist && cameraActive) };
+    return {
+        x: pointerX,
+        y: pointerY,
+        active,
+        hand: cameraActive,
+        fist: Boolean(window.isFist && cameraActive),
+        openHand: Boolean(window.isOpenHand && cameraActive),
+    };
 }
 
 // 在一组交互 item 中选出距离指针最近且在阈值内的索引
@@ -1234,19 +1813,12 @@ function spawnFruit(step) {
 
 function updateMenu(delta, input) {
     drawText("Select Game Mode", W / 2, 88, 58, "#ffffff");
-    drawText("挥动或移动光标到按钮上，停留片刻即可开始", W / 2, 132, 24, "rgba(255,255,255,0.78)");
+    drawText("先选择本局携带道具，再停留到模式按钮开始", W / 2, 132, 24, "rgba(255,255,255,0.78)");
+
+    const loadoutHovered = updateLoadoutSelector(delta, input);
 
     let trigger = null;
-    let hoveredIndex = -1;
-    let hoveredDistance = Infinity;
-    menuItems.forEach((item, index) => {
-        const hitRadius = item.mode === "settings" ? 160 : 120;
-        const dist = distance(input.x, input.y, item.x, item.y);
-        if (dist <= hitRadius && dist < hoveredDistance) {
-            hoveredDistance = dist;
-            hoveredIndex = index;
-        }
-    });
+    const hoveredIndex = loadoutHovered ? -1 : getMenuItemIndexAt(input.x, input.y);
     menuItems.forEach((item, index) => {
         const hovered = index === hoveredIndex;
         if (hovered) {
@@ -1255,9 +1827,10 @@ function updateMenu(delta, input) {
             menuHold[index] = Math.max(0, menuHold[index] - delta * 2);
         }
 
-        drawRoundedRect(item.x - 150, item.y - 36, 300, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-        drawText(item.text, item.x, item.y - 4, 36, hovered ? item.color : "#ffffff");
-        drawLoadingArc(item.x, item.y + 30, 38, menuHold[index] / REQUIRED_HOLD_MS, item.color);
+        const bounds = getButtonBounds(item);
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 18, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
+        drawText(item.text, item.x, item.y - 2, item.height > 60 ? 32 : 26, hovered ? item.color : "#ffffff");
+        drawLoadingArc(bounds.x + bounds.width - 30, item.y, 15, menuHold[index] / REQUIRED_HOLD_MS, item.color);
 
         if (menuHold[index] >= REQUIRED_HOLD_MS) {
             trigger = item;
@@ -1272,8 +1845,9 @@ function updateMenu(delta, input) {
             settingsSliderDragSource = null;
             settingsLatchedIndex = -1;
         } else if (trigger.mode === "shop") { 
-            gameState = GAME.SHOP;
+            enterShop();
         } else { 
+            normalizeCarriedItem();
             resetGame(trigger.mode);
         }
     }
@@ -1282,12 +1856,11 @@ function updateMenu(delta, input) {
 function updateSettings(delta, input) {
     drawText("Settings", W / 2, 90, 58, "#ffffff");
     drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, "rgba(255,255,255,0.78)");
-    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  攥拳时才使用灵敏度加成`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
+    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  滑条可用鼠标拖动或手指直接指向调节`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
 
     const centerX = W / 2;
     const sliderLeft = centerX - 180;
     const sliderRight = centerX + 180;
-    const sliderYs = [240, 330, 420];
     const muteX = 110;
     const muteY = 320;
     const cameraX = W - 110;
@@ -1320,24 +1893,25 @@ function updateSettings(delta, input) {
         const label = item.text();
         if (index === 2) {
             // Draw three separate slider cards in the middle column.
-            const labels = ["灵敏度", "音乐音量", "音效音量"];
             const settings = getSettingsState();
-            const values = [settings.sensitivity || 1.0, settings.musicVolume || 0.45, settings.sfxVolume || 0.8];
+            const values = {
+                sensitivity: settings.sensitivity || 1.0,
+                music: settings.musicVolume || 0,
+                sfx: settings.sfxVolume || 0,
+            };
 
-            for (let si = 0; si < 3; si += 1) {
-                const y = sliderYs[si];
+            settingsSliderRows.forEach((slider) => {
+                const y = slider.y;
                 const top = y - 28;
                 const bottom = y + 28;
                 const sliderHovered = input.x >= sliderLeft && input.x <= sliderRight && input.y >= top && input.y <= bottom;
-                if (sliderHovered && input.fist) {
-                    settingsSliderDragging = true;
-                    settingsSliderDragSource = "hand";
-                    settingsSliderDragTarget = si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx";
+                if (sliderHovered && input.hand) {
+                    setSettingsSliderFromX(slider.target, input.x);
                 }
-                const rowHovered = sliderHovered || (settingsSliderDragging && settingsSliderDragTarget === (si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx"));
+                const rowHovered = sliderHovered || (settingsSliderDragging && settingsSliderDragTarget === slider.target);
 
                 drawRoundedRect(sliderLeft - 10, y - 28, 380, 56, 18, rowHovered ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)", rowHovered ? item.color : "rgba(255,255,255,0.10)");
-                drawText(labels[si], centerX, y - 10, 24, rowHovered ? item.color : "#ffffff");
+                drawText(slider.label, centerX, y - 10, 24, rowHovered ? item.color : "#ffffff");
 
                 ctx.save();
                 ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -1349,11 +1923,11 @@ function updateSettings(delta, input) {
                 ctx.stroke();
 
                 let handleX;
-                if (si === 0) {
-                    const v = values[0];
+                if (slider.target === "sensitivity") {
+                    const v = values.sensitivity;
                     handleX = sliderLeft + ((v - 0.6) / (1.6 - 0.6)) * (sliderRight - sliderLeft);
                 } else {
-                    const v = values[si];
+                    const v = values[slider.target];
                     handleX = sliderLeft + (v) * (sliderRight - sliderLeft);
                 }
 
@@ -1370,21 +1944,14 @@ function updateSettings(delta, input) {
                 ctx.fill();
                 ctx.restore();
 
-                const valueText = si === 0 ? (values[0] || 1.0).toFixed(2) : Math.round((values[si] || 0) * 100) + "%";
+                const valueText = slider.target === "sensitivity" ? (values.sensitivity || 1.0).toFixed(2) : Math.round((values[slider.target] || 0) * 100) + "%";
                 drawText(valueText, sliderRight + 52, y - 10, 18, item.color, "right");
 
-                if (settingsSliderDragging && settingsSliderDragTarget === (si === 0 ? "sensitivity" : si === 1 ? "music" : "sfx")) {
-                    if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(input.x);
-                    else if (settingsSliderDragTarget === "music") setMusicFromSliderX(input.x);
-                    else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(input.x);
+                if (settingsSliderDragging && settingsSliderDragTarget === slider.target) {
+                    const dragX = settingsSliderDragSource === "mouse" ? mouseX : input.x;
+                    setSettingsSliderFromX(settingsSliderDragTarget, dragX);
                 }
-            }
-
-            if (settingsSliderDragSource === "hand" && !input.fist) {
-                settingsSliderDragging = false;
-                settingsSliderDragSource = null;
-                settingsSliderDragTarget = null;
-            }
+            });
 
             if (settingsSliderDragging) {
                 trigger = null;
@@ -1506,7 +2073,7 @@ function updatePlaying(delta, input) {
         return;
     }
 
-    consumeSnapTrigger();
+    consumeSnapTrigger(input);
     updateTimeStopTimers(delta);
 
     const timeStopped = timeStopTimer > 0;
@@ -1596,6 +2163,8 @@ function updatePlaying(delta, input) {
         }
     });
 
+    const clearButtonHovered = updateClearItemControl(delta, input);
+
     fruits = fruits.filter((fruit) => fruit.alive && fruit.y < H + 80);
     particles = particles.filter((particle) => particle.life > 0);
     slices = slices.filter((slice) => slice.life > 0);
@@ -1610,13 +2179,16 @@ function updatePlaying(delta, input) {
     slices.forEach((slice) => slice.draw());
     particles.forEach((particle) => particle.draw());
     splats.forEach((splat) => splat.draw());
+    clearEffects.forEach((effect) => effect.draw());
+    drawClearScreenEffect();
     drawTimeStopEffect();
     comboEffects.forEach((effect) => effect.draw());
     drawComboEdgeEffect();
+    drawOpenHandClearIndicator(input);
 
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
-    drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
+    drawCarriedItemHud(clearButtonHovered);
     drawComboHud();
     drawTimeStopHud();
     if (chosenMode === MODES.classic) {
@@ -1624,31 +2196,6 @@ function updatePlaying(delta, input) {
     } else {
         drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
-    // 攥拳一键清屏逻辑 (建议放在 updatePlaying 的开头或结尾部分)
-if (input.fist) {
-    if (!fistLatched && clearItems > 0) {
-        fistLatched = true;
-        clearItems -= 1;
-        resetCombo();
-        
-        // 播放爆炸音效
-        if (window.playBomb) window.playBomb();
-        
-        // 销毁场上所有非炸弹水果
-        fruits.forEach(fruit => {
-            if (fruit.alive && fruit.type !== "bomb") {
-                fruit.alive = false;
-                score += 1;
-                money += 1;
-                // 此处你可自行决定是否调用 spawnParticles(fruit) 等特效
-            }
-        });
-        saveShopData();
-    }
-} else {
-    // 松开拳头时重置触发器
-    fistLatched = false; 
-}
 }
 
 function updateGameover(delta, input) {
@@ -1689,10 +2236,10 @@ function updateGameover(delta, input) {
 function drawPointer(input) {
     if (gameState === GAME.PLAYING) return; // only show pointer in menu/gameover
     ctx.save();
-    ctx.strokeStyle = input.fist ? "#ff6b6b" : "#7ef7c5";
+    ctx.strokeStyle = input.openHand ? "#ffb84d" : input.fist ? "#ff6b6b" : "#7ef7c5";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(input.x, input.y, input.fist ? 14 : 12, 0, Math.PI * 2);
+    ctx.arc(input.x, input.y, input.openHand ? 16 : input.fist ? 14 : 12, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
 }
@@ -1733,9 +2280,7 @@ window.addEventListener("pointermove", (event) => {
     mouseMovedRecently = true;
 
     if (gameState === GAME.SETTINGS && settingsSliderDragging) {
-        if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(mouseX);
-        else if (settingsSliderDragTarget === "music") setMusicFromSliderX(mouseX);
-        else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(mouseX);
+        setSettingsSliderFromX(settingsSliderDragTarget, mouseX);
     }
 });
 
@@ -1754,16 +2299,13 @@ canvas.addEventListener("pointerdown", (event) => {
     const y = ((event.clientY - rect.top) / rect.height) * H;
 
     if (gameState === GAME.MENU) {
-        let idx = -1;
-        let bestDistance = Infinity;
-        menuItems.forEach((item, itemIndex) => {
-            const hitRadius = item.mode === "settings" ? 160 : 120;
-            const dist = distance(x, y, item.x, item.y);
-            if (dist <= hitRadius && dist < bestDistance) {
-                bestDistance = dist;
-                idx = itemIndex;
-            }
-        });
+        const loadoutIndex = getLoadoutIndexAt(x, y);
+        if (loadoutIndex !== -1) {
+            setCarriedItem(loadoutOptions[loadoutIndex].item);
+            return;
+        }
+
+        const idx = getMenuItemIndexAt(x, y);
         if (idx !== -1) {
             const selected = menuItems[idx];
             if (selected.mode === "settings") {
@@ -1772,17 +2314,24 @@ canvas.addEventListener("pointerdown", (event) => {
                 settingsSliderDragging = false;
                 settingsSliderDragSource = null;
                 settingsLatchedIndex = -1;
-            } 
-            else if (selected.mode === "shop") { 
-                gameState = GAME.SHOP;
-                shopHold = [0, 0, 0, 0];
-                shopExitHold = 0;
-            }else {
+            } else if (selected.mode === "shop") {
+                enterShop();
+            } else {
+                normalizeCarriedItem();
                 resetGame(selected.mode);
             }
             return;
         }
     } else if (gameState === GAME.SETTINGS) {
+        const sliderTarget = getSettingsSliderTargetAt(x, y);
+        if (sliderTarget) {
+            settingsSliderDragging = true;
+            settingsSliderDragSource = "mouse";
+            settingsSliderDragTarget = sliderTarget;
+            setSettingsSliderFromX(sliderTarget, x);
+            return;
+        }
+
         const idx = getHoveredIndex(settingsItems, x, y, 130);
         if (idx !== -1) {
             const action = settingsItems[idx].action;
@@ -1794,18 +2343,7 @@ canvas.addEventListener("pointerdown", (event) => {
             } else if (action === "cycleEffects") {
                 cycleEffectLevel();
             } else if (action === "sensitivitySlider") {
-                settingsSliderDragging = true;
-                settingsSliderDragSource = "mouse";
-                // Determine which of the three sliders was clicked: sensitivity/music/sfx
-                const item = settingsItems[idx];
-                const spacing = 64;
-                const relY = y - item.y;
-                if (relY < -spacing / 2) settingsSliderDragTarget = "sensitivity";
-                else if (relY > spacing / 2) settingsSliderDragTarget = "sfx";
-                else settingsSliderDragTarget = "music";
-                if (settingsSliderDragTarget === "sensitivity") setSensitivityFromSliderX(x);
-                else if (settingsSliderDragTarget === "music") setMusicFromSliderX(x);
-                else if (settingsSliderDragTarget === "sfx") setSfxFromSliderX(x);
+                return;
             } else if (action === "back") {
                 returnToMenu();
                 gameState = GAME.MENU;
@@ -1844,11 +2382,19 @@ window.addEventListener("load", () => {
 
 // ---------------- Settings UI ----------------
 function loadSettings() {
-    const raw = localStorage.getItem("cohci_settings");
+    const raw = readStoredValue("cohci_settings");
     let s = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
+    const sensitivityValue = Number(s.sensitivity);
+    const musicVolumeValue = Number(s.musicVolume);
+    const sfxVolumeValue = Number(s.sfxVolume);
+    s.muted = !!s.muted;
+    s.showCameraPreview = s.showCameraPreview !== false;
+    s.sensitivity = Number.isFinite(sensitivityValue) ? clamp(sensitivityValue, 0.6, 1.6) : 1.0;
+    s.musicVolume = Number.isFinite(musicVolumeValue) ? clamp(musicVolumeValue, 0, 1) : 0.45;
+    s.sfxVolume = Number.isFinite(sfxVolumeValue) ? clamp(sfxVolumeValue, 0, 1) : 0.8;
     if (!EFFECT_LEVELS[s.effectLevel]) {
         s.effectLevel = "medium";
     }
