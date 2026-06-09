@@ -3,7 +3,16 @@ window.handY = 300;
 window.isFist = false;
 window.handTracked = false;
 window.cameraReady = false;
+window.snapTriggered = false;
+window.snapX = 450;
+window.snapY = 300;
 let lostHandFrames = 0;
+let snapPrimed = false;
+let snapPrimedAt = 0;
+let snapCloseDistance = Infinity;
+let snapLastDistance = Infinity;
+let snapLastTime = 0;
+let snapCooldownUntil = 0;
 
 // 本文件内部使用的 clamp，避免依赖外部脚本作用域
 function clamp(v, a, b) {
@@ -42,6 +51,61 @@ function detectFist(landmarks) {
     return (totalDist / 5) < 0.18;
 }
 
+function getPalmScale(landmarks) {
+    const wrist = landmarks[0];
+    const middleBase = landmarks[9];
+    const indexBase = landmarks[5];
+    const pinkyBase = landmarks[17];
+    const palmHeight = Math.hypot(wrist.x - middleBase.x, wrist.y - middleBase.y);
+    const palmWidth = Math.hypot(indexBase.x - pinkyBase.x, indexBase.y - pinkyBase.y);
+    return Math.max(0.08, palmHeight, palmWidth);
+}
+
+function updateSnapState(landmarks, width, height, normCoord) {
+    const now = performance.now();
+    if (now < snapCooldownUntil) {
+        snapLastTime = now;
+        return;
+    }
+
+    const thumbTip = landmarks[4];
+    const middleTip = landmarks[12];
+    const palmScale = getPalmScale(landmarks);
+    const distanceRatio = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y) / palmScale;
+
+    const closeThreshold = 0.42;
+    const openThreshold = 0.82;
+    const minSeparation = 0.34;
+    const minVelocity = 2.1;
+
+    if (distanceRatio < closeThreshold) {
+        snapPrimed = true;
+        snapPrimedAt = now;
+        snapCloseDistance = distanceRatio;
+    } else if (snapPrimed) {
+        const elapsed = now - snapPrimedAt;
+        const frameSeconds = Math.max(0.016, (now - snapLastTime) / 1000);
+        const velocity = (distanceRatio - snapLastDistance) / frameSeconds;
+        const separatedEnough = distanceRatio > openThreshold && distanceRatio - snapCloseDistance > minSeparation;
+        const timingLooksRight = elapsed >= 40 && elapsed <= 420;
+
+        if (separatedEnough && timingLooksRight && velocity > minVelocity) {
+            const snapMidX = (thumbTip.x + middleTip.x) / 2;
+            const snapMidY = (thumbTip.y + middleTip.y) / 2;
+            window.snapTriggered = true;
+            window.snapX = (1 - normCoord(snapMidX)) * width;
+            window.snapY = normCoord(snapMidY) * height;
+            snapCooldownUntil = now + 1500;
+            snapPrimed = false;
+        } else if (elapsed > 520 || distanceRatio > 1.25) {
+            snapPrimed = false;
+        }
+    }
+
+    snapLastDistance = distanceRatio;
+    snapLastTime = now;
+}
+
 function updateHandState(results) {
     const width = window.GAME_WIDTH || 900;
     const height = window.GAME_HEIGHT || 600;
@@ -60,6 +124,8 @@ function updateHandState(results) {
             const n = (v - margin) / (1 - 2 * margin);
             return clamp(n, 0, 1);
         }
+
+        updateSnapState(landmarks, width, height, normCoord);
 
         const nx = normCoord(indexTip.x);
         const ny = normCoord(indexTip.y);
@@ -81,6 +147,7 @@ function updateHandState(results) {
         if (lostHandFrames > 6) {
             window.handTracked = false;
             window.isFist = false;
+            snapPrimed = false;
         }
     }
 }
