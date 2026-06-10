@@ -53,7 +53,58 @@ function detectFist(landmarks) {
         totalDist += Math.hypot(tip.x - base.x, tip.y - base.y);
     }
 
-    return (totalDist / 5) < 0.18;
+    return (totalDist / 5) < FIST_THRESHOLD;
+}
+
+function landmarkDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function analyzeOpenHand(landmarks) {
+    const palmScale = getPalmScale(landmarks);
+    const wrist = landmarks[0];
+    const fingers = [
+        { tip: 8, pip: 6, mcp: 5 },
+        { tip: 12, pip: 10, mcp: 9 },
+        { tip: 16, pip: 14, mcp: 13 },
+        { tip: 20, pip: 18, mcp: 17 },
+    ];
+
+    let extendedCount = 0;
+    fingers.forEach((finger) => {
+        const tip = landmarks[finger.tip];
+        const pip = landmarks[finger.pip];
+        const mcp = landmarks[finger.mcp];
+        const tipOutPastPip = landmarkDistance(tip, wrist) > landmarkDistance(pip, wrist) + palmScale * 0.12;
+        const fingerLength = landmarkDistance(tip, mcp) > palmScale * 0.58;
+        if (tipOutPastPip && fingerLength) {
+            extendedCount += 1;
+        }
+    });
+
+    const thumbTip = landmarks[4];
+    const thumbIp = landmarks[3];
+    const thumbBase = landmarks[2];
+    const indexBase = landmarks[5];
+    const thumbOpen =
+        landmarkDistance(thumbTip, wrist) > landmarkDistance(thumbIp, wrist) + palmScale * 0.08 &&
+        landmarkDistance(thumbTip, thumbBase) > palmScale * 0.42 &&
+        landmarkDistance(thumbTip, indexBase) > palmScale * 0.36;
+    if (thumbOpen) {
+        extendedCount += 1;
+    }
+
+    const fingerSpread =
+        (landmarkDistance(landmarks[8], landmarks[12]) +
+            landmarkDistance(landmarks[12], landmarks[16]) +
+            landmarkDistance(landmarks[16], landmarks[20])) /
+        3;
+    const thumbSpread = landmarkDistance(landmarks[4], landmarks[8]);
+
+    return {
+        extendedCount,
+        isOpenHand: extendedCount === 5 && fingerSpread > palmScale * 0.22 && thumbSpread > palmScale * 0.35,
+    };
 }
 
 function isFingerExtended(landmarks, tipId, pipId, margin = 0.02) {
@@ -96,7 +147,7 @@ function getPalmScale(landmarks) {
     return Math.max(0.08, palmHeight, palmWidth);
 }
 
-function updateSnapState(landmarks, width, height, normCoord) {
+function updateSnapState(landmarks, width, height, normCoord, openHandState) {
     const now = performance.now();
     if (now < snapCooldownUntil) {
         snapLastTime = now;
@@ -135,14 +186,14 @@ function updateHandState(results) {
         // 增强可达范围并根据设置调整灵敏度
         const margin = 0.05;
         const baseSensitivity = (window.settings && window.settings.sensitivity) ? Number(window.settings.sensitivity) : 1.0;
-        const sensitivity = localIsFist ? baseSensitivity : 1.0;
+        const sensitivity = baseSensitivity;
 
         function normCoord(v) {
             const n = (v - margin) / (1 - 2 * margin);
             return clamp(n, 0, 1);
         }
 
-        updateSnapState(landmarks, width, height, normCoord);
+        updateSnapState(landmarks, width, height, normCoord, openHandState);
 
         const nx = normCoord(indexTip.x);
         const ny = normCoord(indexTip.y);
