@@ -1,11 +1,15 @@
 window.handX = 450;
 window.handY = 300;
 window.isFist = false;
+window.isThumbsUp = false;
+window.isOpenPalm = false;
 window.handTracked = false;
 window.cameraReady = false;
 window.snapTriggered = false;
 window.snapX = 450;
 window.snapY = 300;
+window.faceState = "calm"; // calm | happy | sad | angry
+window.faceStateCooldownUntil = 0;
 let lostHandFrames = 0;
 let snapPrimed = false;
 let snapPrimedAt = 0;
@@ -13,6 +17,7 @@ let snapCloseDistance = Infinity;
 let snapLastDistance = Infinity;
 let snapLastTime = 0;
 let snapCooldownUntil = 0;
+let openPalmLatched = false;
 
 // 本文件内部使用的 clamp，避免依赖外部脚本作用域
 function clamp(v, a, b) {
@@ -51,6 +56,36 @@ function detectFist(landmarks) {
     return (totalDist / 5) < 0.18;
 }
 
+function isFingerExtended(landmarks, tipId, pipId, margin = 0.02) {
+    return landmarks[tipId].y < landmarks[pipId].y - margin;
+}
+
+function detectThumbsUp(landmarks) {
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const thumbIp = landmarks[3];
+    const thumbRaised = thumbTip.y < wrist.y - 0.04 && thumbTip.y < thumbIp.y - 0.015;
+    const otherFingersCurled = !isFingerExtended(landmarks, 8, 6)
+        && !isFingerExtended(landmarks, 12, 10)
+        && !isFingerExtended(landmarks, 16, 14)
+        && !isFingerExtended(landmarks, 20, 18);
+
+    return thumbRaised && otherFingersCurled;
+}
+
+function detectOpenPalm(landmarks) {
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const thumbMcp = landmarks[2];
+    const thumbExtended = thumbTip.y < wrist.y - 0.03 || Math.abs(thumbTip.x - thumbMcp.x) > 0.08;
+
+    return thumbExtended
+        && isFingerExtended(landmarks, 8, 6)
+        && isFingerExtended(landmarks, 12, 10)
+        && isFingerExtended(landmarks, 16, 14)
+        && isFingerExtended(landmarks, 20, 18);
+}
+
 function getPalmScale(landmarks) {
     const wrist = landmarks[0];
     const middleBase = landmarks[9];
@@ -68,41 +103,21 @@ function updateSnapState(landmarks, width, height, normCoord) {
         return;
     }
 
-    const thumbTip = landmarks[4];
-    const middleTip = landmarks[12];
-    const palmScale = getPalmScale(landmarks);
-    const distanceRatio = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y) / palmScale;
-
-    const closeThreshold = 0.42;
-    const openThreshold = 0.82;
-    const minSeparation = 0.34;
-    const minVelocity = 2.1;
-
-    if (distanceRatio < closeThreshold) {
-        snapPrimed = true;
-        snapPrimedAt = now;
-        snapCloseDistance = distanceRatio;
-    } else if (snapPrimed) {
-        const elapsed = now - snapPrimedAt;
-        const frameSeconds = Math.max(0.016, (now - snapLastTime) / 1000);
-        const velocity = (distanceRatio - snapLastDistance) / frameSeconds;
-        const separatedEnough = distanceRatio > openThreshold && distanceRatio - snapCloseDistance > minSeparation;
-        const timingLooksRight = elapsed >= 40 && elapsed <= 420;
-
-        if (separatedEnough && timingLooksRight && velocity > minVelocity) {
-            const snapMidX = (thumbTip.x + middleTip.x) / 2;
-            const snapMidY = (thumbTip.y + middleTip.y) / 2;
+    const openPalm = detectOpenPalm(landmarks);
+    if (openPalm) {
+        if (!openPalmLatched) {
+            const palmCenterX = (landmarks[0].x + landmarks[9].x) / 2;
+            const palmCenterY = (landmarks[0].y + landmarks[9].y) / 2;
             window.snapTriggered = true;
-            window.snapX = (1 - normCoord(snapMidX)) * width;
-            window.snapY = normCoord(snapMidY) * height;
+            window.snapX = (1 - normCoord(palmCenterX)) * width;
+            window.snapY = normCoord(palmCenterY) * height;
             snapCooldownUntil = now + 1500;
-            snapPrimed = false;
-        } else if (elapsed > 520 || distanceRatio > 1.25) {
-            snapPrimed = false;
+            openPalmLatched = true;
         }
+    } else {
+        openPalmLatched = false;
     }
 
-    snapLastDistance = distanceRatio;
     snapLastTime = now;
 }
 
@@ -114,6 +129,8 @@ function updateHandState(results) {
         const landmarks = results.multiHandLandmarks[0];
         const indexTip = landmarks[8];
         const localIsFist = detectFist(landmarks);
+        const localIsThumbsUp = detectThumbsUp(landmarks);
+        const localIsOpenPalm = detectOpenPalm(landmarks);
 
         // 增强可达范围并根据设置调整灵敏度
         const margin = 0.05;
@@ -140,17 +157,87 @@ function updateHandState(results) {
         window.handX = window.handX * 0.45 + nextX * 0.55;
         window.handY = window.handY * 0.45 + nextY * 0.55;
         window.isFist = localIsFist;
+        window.isThumbsUp = localIsThumbsUp;
+        window.isOpenPalm = localIsOpenPalm;
         window.handTracked = true;
         lostHandFrames = 0;
+        // 简易尝试：如果 faceLandmarker 可用，会在 face 回调中更新 faceState
     } else {
         lostHandFrames += 1;
         if (lostHandFrames > 6) {
             window.handTracked = false;
             window.isFist = false;
+            window.isThumbsUp = false;
+            window.isOpenPalm = false;
             snapPrimed = false;
+            openPalmLatched = false;
         }
     }
 }
+
+// Face Landmarker integration (optional). If FaceLandmarker exists, use it; otherwise fall back to calm.
+let faceLandmarker = null;
+function detectFaceEmotionFromLandmarks(landmarks) {
+    try {
+        // FaceMesh-like indices: mouth corners ~61/291, upper/lower lip ~13/14, brow/eye approx indices
+        const lM = landmarks[61];
+        const rM = landmarks[291];
+        const uLip = landmarks[13];
+        const lLip = landmarks[14];
+        const leftBrow = landmarks[70] || landmarks[55];
+        const rightBrow = landmarks[300] || landmarks[285];
+        const leftEyeTop = landmarks[159] || landmarks[145];
+        const rightEyeTop = landmarks[386] || landmarks[374];
+
+        if (!lM || !rM || !uLip || !lLip) return "calm";
+
+        const mouthWidth = Math.hypot(rM.x - lM.x, rM.y - lM.y);
+        const mouthOpen = uLip.y - lLip.y; // negative when open upwards
+        const eyeOpenness = ((leftEyeTop.y + rightEyeTop.y) / 2) - ((uLip.y + lLip.y) / 2);
+
+        // simple heuristics
+        if (mouthWidth > 0.08 && mouthOpen < -0.01) {
+            return "happy";
+        }
+
+        // sad: mouth corners droop (upper lip higher than lower lip) and eyes lower
+        if (mouthOpen > 0.015) {
+            return "sad";
+        }
+
+        // angry: brows lowered relative to eyes
+        if (leftBrow && rightBrow && leftEyeTop) {
+            const browY = (leftBrow.y + rightBrow.y) / 2;
+            const eyeY = leftEyeTop.y;
+            if (browY > eyeY + 0.008) return "angry";
+        }
+
+        return "calm";
+    } catch (e) {
+        return "calm";
+    }
+}
+
+function updateFaceState(results) {
+    const now = performance.now();
+    if (!results) return;
+    let landmarks = null;
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+        landmarks = results.multiFaceLandmarks[0];
+    } else if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        landmarks = results.faceLandmarks[0];
+    }
+    if (!landmarks) return;
+
+    const newEmotion = detectFaceEmotionFromLandmarks(landmarks);
+    if (newEmotion !== window.faceState && now > window.faceStateCooldownUntil) {
+        window.faceState = newEmotion;
+        window.faceStateCooldownUntil = now + 10000; // 10s cooldown
+        // expose moment of change
+        window.faceStateChangedAt = now;
+    }
+}
+
 
 let hands = null;
 let sendingFrame = false;
@@ -198,6 +285,22 @@ async function startCamera() {
 
         hands.onResults(updateHandState);
 
+        // Try to instantiate FaceLandmarker if available (optional). Guarded to avoid runtime errors.
+        try {
+            if (typeof FaceLandmarker !== 'undefined') {
+                faceLandmarker = new FaceLandmarker({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_landmarker@0.0.1/${file}` });
+                if (faceLandmarker && typeof faceLandmarker.setOptions === 'function') {
+                    // best-effort options
+                    faceLandmarker.setOptions?.({ maxNumFaces: 1 });
+                }
+                if (faceLandmarker && typeof faceLandmarker.onResults === 'function') {
+                    faceLandmarker.onResults(updateFaceState);
+                }
+            }
+        } catch (e) {
+            faceLandmarker = null;
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 width: 640,
@@ -216,6 +319,14 @@ async function startCamera() {
 
         const ticker = () => {
             processFrame();
+            // if faceLandmarker exists, send frames to it too
+            if (faceLandmarker && videoElement && videoElement.readyState >= 2) {
+                try {
+                    faceLandmarker.send({ image: videoElement });
+                } catch (e) {
+                    // ignore
+                }
+            }
             window.requestAnimationFrame(ticker);
         };
         window.requestAnimationFrame(ticker);

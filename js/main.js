@@ -16,6 +16,7 @@ const GAME = {
     PLAYING: 2,
     GAMEOVER: 3,
     SHOP: 4,
+    DOJO: 5,
 };
 
 const MODES = {
@@ -33,6 +34,7 @@ const TIME_STOP_COOLDOWN_MS = 7600;
 const TIME_STOP_SLOW_FACTOR = 0.04;
 const TIME_STOP_BGM_VOLUME_FACTOR = 0.18;
 const TIME_STOP_SOUND = "时间停止";
+const CLEAR_COOLDOWN_MS = 3500;
 
 const EFFECT_LEVELS = {
     low: {
@@ -71,10 +73,11 @@ const EFFECT_LEVEL_ORDER = ["low", "medium", "high"];
 
 // 将原本的 menuItems 替换为以下代码：
 const menuItems = [
-    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 220, color: "#7ef7c5" },
-    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 320, color: "#6db8ff" },
-    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 420, color: "#dba4ff" },
-    { text: "设置", mode: "settings", x: W / 2, y: 520, color: "#ffd166" },
+    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 180, color: "#7ef7c5" },
+    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 270, color: "#6db8ff" },
+    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 360, color: "#dba4ff" },
+    { text: "道场", mode: "dojo", x: W / 2, y: 450, color: "#8be9fd" },
+    { text: "设置", mode: "settings", x: W / 2, y: 540, color: "#ffd166" },
     { text: "商店", mode: "shop", x: W - 160, y: H - 50, color: "#ff9f1c" }, // 移动到右下角
 ];
 
@@ -131,6 +134,7 @@ let currentColor = localStorage.getItem("fn_current_color") || "#cff4ff";
 
 // 状态控制
 let fistLatched = false; // 用于防止长按拳头触发多次清屏
+let clearCooldownUntil = 0;
 let shopHold = [0, 0, 0, 0]; // 控制商店商品的长按购买
 let shopExitHold = 0; 
 let shopMessage = "";        // 商店提示信息文本
@@ -151,6 +155,36 @@ const shopItems = [
     { type: "color", text: "金色刀刃 (¥50)", cost: 50, value: "#ffd166", x: W / 2 - 200, y: 380, color: "#ffd166" },
     { type: "color", text: "绿色刀刃 (¥50)", cost: 50, value: "#7ef7c5", x: W / 2 + 200, y: 380, color: "#7ef7c5" },
 ];
+
+const DOJO_BACKGROUND_LIBRARY = [
+    { id: "bg-1", label: "bg1", src: "assets/images/bg1.jpg", accent: "#7ef7c5", note: "bg1.jpg" },
+    { id: "bg-2", label: "bg2", src: "assets/images/bg2.jpg", accent: "#6db8ff", note: "bg2.jpg" },
+    { id: "bg-3", label: "bg3", src: "assets/images/bg3.jpg", accent: "#ff9f1c", note: "bg3.jpg" },
+];
+
+const DOJO_EFFECT_LIBRARY = [
+    { id: "none", label: "默认" },
+    { id: "rain", label: "下雨" },
+    { id: "snow", label: "下雪" },
+];
+
+let dojoState = {
+    focus: "background",
+    previewBackgroundIndex: 0,
+    previewEffectIndex: 0,
+    activeBackgroundIndex: 0,
+    activeEffectIndex: 0,
+};
+
+let dojoHold = {
+    modeToggle: 0,
+    exit: 0,
+    left: 0,
+    center: 0,
+    right: 0,
+};
+
+const dojoImageCache = new Map();
 
 function updateShop(delta, input) {
     drawText("商 店", W / 2, 88, 58, "#ffffff");
@@ -254,6 +288,247 @@ function saveShopData() {
     localStorage.setItem("fn_clear_items", clearItems);
     localStorage.setItem("fn_colors", JSON.stringify(unlockedColors));
     localStorage.setItem("fn_current_color", currentColor);
+}
+
+function getDojoImage(src) {
+    if (!src) {
+        return null;
+    }
+    if (!dojoImageCache.has(src)) {
+        const image = new Image();
+        image.src = src;
+        dojoImageCache.set(src, image);
+    }
+    return dojoImageCache.get(src);
+}
+
+function drawDojoEffectOverlay(effectId, x, y, width, height, opacity = 1) {
+    const time = lastTimestamp / 1000;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
+
+    if (effectId === "rain") {
+        for (let layer = 0; layer < 3; layer += 1) {
+            const layerSpeed = 150 + layer * 70;
+            const dropCount = 18 + layer * 10;
+            ctx.strokeStyle = layer === 0 ? "rgba(190, 235, 255, 0.35)" : layer === 1 ? "rgba(160, 220, 255, 0.28)" : "rgba(125, 195, 255, 0.18)";
+            ctx.lineWidth = 1 + layer;
+            for (let i = 0; i < dropCount; i += 1) {
+                const seed = i + layer * 21;
+                const px = x + ((seed * 57 + time * 110 + layer * 33) % width);
+                const py = y + ((time * layerSpeed + seed * 41) % height);
+                const length = 10 + layer * 6;
+                ctx.beginPath();
+                ctx.moveTo(px, py);
+                ctx.lineTo(px + 6, py + length);
+                ctx.stroke();
+            }
+        }
+
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        for (let i = 0; i < 5; i += 1) {
+            const px = x + ((time * 70 + i * 137) % width);
+            const py = y + ((time * 90 + i * 97) % height);
+            ctx.fillRect(px, py, 18, 1.5);
+        }
+    } else if (effectId === "snow") {
+        const drifts = [
+            { alpha: 0.60, size: 1.8, speed: 14, sway: 18 },
+            { alpha: 0.38, size: 2.8, speed: 10, sway: 32 },
+            { alpha: 0.22, size: 4.0, speed: 6, sway: 52 },
+        ];
+
+        drifts.forEach((drift, layer) => {
+            ctx.fillStyle = `rgba(248, 252, 255, ${drift.alpha})`;
+            const flakeCount = 14 + layer * 8;
+            for (let i = 0; i < flakeCount; i += 1) {
+                const seed = i + layer * 19;
+                const px = x + ((seed * 71 + Math.sin(time * 1.2 + seed) * drift.sway + time * 18) % width);
+                const py = y + ((time * drift.speed + seed * 49) % height);
+                const radius = drift.size + (seed % 3) * 0.35;
+                ctx.beginPath();
+                ctx.arc(px, py, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        });
+
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.beginPath();
+        ctx.ellipse(x + width * 0.5, y + height * 0.22, width * 0.46, height * 0.10, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    ctx.restore();
+}
+
+function drawDojoPreviewFrame(frameX, frameY, frameWidth, frameHeight, backgroundItem, effectItem, selected) {
+    const frameRadius = 30;
+    const image = getDojoImage(backgroundItem.src);
+    const pulse = 1 + Math.sin(lastTimestamp / 520) * (selected ? 0.018 : 0.01);
+    const scaledWidth = frameWidth * pulse;
+    const scaledHeight = frameHeight * pulse;
+    const drawX = frameX - (scaledWidth - frameWidth) / 2;
+    const drawY = frameY - (scaledHeight - frameHeight) / 2;
+
+    ctx.save();
+    ctx.shadowColor = backgroundItem.accent;
+    ctx.shadowBlur = selected ? 34 : 18;
+    drawRoundedRect(drawX, drawY, scaledWidth, scaledHeight, frameRadius, "rgba(8, 14, 24, 0.72)", backgroundItem.accent);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(drawX + frameRadius, drawY);
+    ctx.arcTo(drawX + scaledWidth, drawY, drawX + scaledWidth, drawY + scaledHeight, frameRadius);
+    ctx.arcTo(drawX + scaledWidth, drawY + scaledHeight, drawX, drawY + scaledHeight, frameRadius);
+    ctx.arcTo(drawX, drawY + scaledHeight, drawX, drawY, frameRadius);
+    ctx.arcTo(drawX, drawY, drawX + scaledWidth, drawY, frameRadius);
+    ctx.closePath();
+    ctx.clip();
+
+    if (image && image.complete && image.naturalWidth > 0) {
+        const imageRatio = image.naturalWidth / image.naturalHeight;
+        const frameRatio = scaledWidth / scaledHeight;
+        let imgWidth = scaledWidth;
+        let imgHeight = scaledHeight;
+        let imgX = drawX;
+        let imgY = drawY;
+
+        if (imageRatio > frameRatio) {
+            imgHeight = scaledHeight;
+            imgWidth = scaledHeight * imageRatio;
+            imgX = drawX - (imgWidth - scaledWidth) / 2;
+        } else {
+            imgWidth = scaledWidth;
+            imgHeight = scaledWidth / imageRatio;
+            imgY = drawY - (imgHeight - scaledHeight) / 2;
+        }
+
+        ctx.drawImage(image, imgX, imgY, imgWidth, imgHeight);
+    } else {
+        const gradient = ctx.createLinearGradient(drawX, drawY, drawX + scaledWidth, drawY + scaledHeight);
+        gradient.addColorStop(0, "rgba(126, 247, 197, 0.18)");
+        gradient.addColorStop(0.5, "rgba(109, 184, 255, 0.12)");
+        gradient.addColorStop(1, "rgba(219, 164, 255, 0.16)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(drawX, drawY, scaledWidth, scaledHeight);
+
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.fillRect(drawX + 18, drawY + 18, scaledWidth - 36, scaledHeight - 36);
+    }
+
+    drawDojoEffectOverlay(effectItem.id, drawX, drawY, scaledWidth, scaledHeight, 1);
+    ctx.restore();
+
+    drawRoundedRect(drawX + 20, drawY + 20, 160, 36, 16, "rgba(3,8,16,0.72)", backgroundItem.accent);
+    drawText(backgroundItem.label, drawX + 100, drawY + 38, 20, backgroundItem.accent);
+
+    drawRoundedRect(drawX + scaledWidth - 170, drawY + 20, 150, 36, 16, "rgba(3,8,16,0.72)", effectItem.id === "none" ? "#7ef7c5" : "#8be9fd");
+    drawText(`特效：${effectItem.label}`, drawX + scaledWidth - 95, drawY + 38, 18, effectItem.id === "none" ? "#7ef7c5" : "#8be9fd");
+
+    const note = backgroundItem.src ? backgroundItem.note : backgroundItem.note;
+    drawText(note, drawX + scaledWidth / 2, drawY + scaledHeight - 28, 18, "rgba(255,255,255,0.70)");
+}
+
+function updateDojo(delta, input) {
+    drawText("道 场", W / 2, 72, 60, "#5b3f23");
+    drawText("左/右区域停留一秒切换预览，中间攥拳一秒确认", W / 2, 118, 22, "rgba(91,63,35,0.72)");
+
+    const frameX = 110;
+    const frameY = 150;
+    const frameWidth = W - 220;
+    const frameHeight = 340;
+    const toggleX = W - 260;
+    const toggleY = 26;
+    const toggleWidth = 230;
+    const toggleHeight = 46;
+    const exitX = 18;
+    const exitY = 18;
+    const exitWidth = 120;
+    const exitHeight = 46;
+
+    const exitHovered = input.x >= exitX && input.x <= exitX + exitWidth && input.y >= exitY && input.y <= exitY + exitHeight;
+    if (exitHovered) {
+        dojoHold.exit = Math.min(REQUIRED_HOLD_MS, dojoHold.exit + delta);
+    } else {
+        dojoHold.exit = Math.max(0, dojoHold.exit - delta * 2);
+    }
+
+    drawRoundedRect(exitX, exitY, exitWidth, exitHeight, 18, exitHovered ? "rgba(91, 63, 35, 0.20)" : "rgba(255,255,255,0.14)", "rgba(91, 63, 35, 0.45)");
+    drawText("返回", exitX + exitWidth / 2, exitY + 24, 22, exitHovered ? "#5b3f23" : "rgba(91,63,35,0.90)");
+    drawLoadingArc(exitX + exitWidth / 2, exitY + exitHeight + 6, 14, dojoHold.exit / REQUIRED_HOLD_MS, "#5b3f23");
+
+    if (dojoHold.exit >= REQUIRED_HOLD_MS) {
+        returnToMenu();
+        return;
+    }
+
+    const toggleHovered = input.x >= toggleX && input.x <= toggleX + toggleWidth && input.y >= toggleY && input.y <= toggleY + toggleHeight;
+    if (toggleHovered) {
+        dojoHold.modeToggle = Math.min(REQUIRED_HOLD_MS, dojoHold.modeToggle + delta);
+    } else {
+        dojoHold.modeToggle = Math.max(0, dojoHold.modeToggle - delta * 2);
+    }
+
+    drawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight, 20, toggleHovered ? "rgba(91,63,35,0.20)" : "rgba(255,255,255,0.12)", "rgba(91,63,35,0.45)");
+    drawText(dojoState.focus === "background" ? "当前：切背景" : "当前：切特效", toggleX + toggleWidth / 2, toggleY + 24, 20, "#5b3f23");
+    drawLoadingArc(toggleX + toggleWidth / 2, toggleY + toggleHeight + 6, 16, dojoHold.modeToggle / REQUIRED_HOLD_MS, "#5b3f23");
+
+    const modeToggleTriggered = dojoHold.modeToggle >= REQUIRED_HOLD_MS;
+    if (modeToggleTriggered) {
+        toggleDojoFocus();
+        return;
+    }
+
+    const leftZone = { x: 30, y: frameY + 40, w: 90, h: frameHeight - 80 };
+    const rightZone = { x: W - 120, y: frameY + 40, w: 90, h: frameHeight - 80 };
+    const centerZone = { x: frameX + 120, y: frameY + 40, w: frameWidth - 240, h: frameHeight - 80 };
+
+    const inLeft = input.x >= leftZone.x && input.x <= leftZone.x + leftZone.w && input.y >= leftZone.y && input.y <= leftZone.y + leftZone.h;
+    const inRight = input.x >= rightZone.x && input.x <= rightZone.x + rightZone.w && input.y >= rightZone.y && input.y <= rightZone.y + rightZone.h;
+    const inCenter = input.x >= centerZone.x && input.x <= centerZone.x + centerZone.w && input.y >= centerZone.y && input.y <= centerZone.y + centerZone.h;
+
+    dojoHold.left = inLeft ? Math.min(REQUIRED_HOLD_MS, dojoHold.left + delta) : Math.max(0, dojoHold.left - delta * 2);
+    dojoHold.right = inRight ? Math.min(REQUIRED_HOLD_MS, dojoHold.right + delta) : Math.max(0, dojoHold.right - delta * 2);
+    dojoHold.center = (inCenter && input.fist) ? Math.min(REQUIRED_HOLD_MS, dojoHold.center + delta) : Math.max(0, dojoHold.center - delta * 2);
+
+    const backgroundItem = dojoState.focus === "background"
+        ? (DOJO_BACKGROUND_LIBRARY[dojoState.previewBackgroundIndex] || DOJO_BACKGROUND_LIBRARY[0])
+        : (DOJO_BACKGROUND_LIBRARY[dojoState.activeBackgroundIndex] || DOJO_BACKGROUND_LIBRARY[0]);
+    const effectItem = dojoState.focus === "effect"
+        ? (DOJO_EFFECT_LIBRARY[dojoState.previewEffectIndex] || DOJO_EFFECT_LIBRARY[0])
+        : (DOJO_EFFECT_LIBRARY[dojoState.activeEffectIndex] || DOJO_EFFECT_LIBRARY[0]);
+
+    drawDojoPreviewFrame(frameX, frameY, frameWidth, frameHeight, backgroundItem, effectItem, true);
+
+    drawRoundedRect(leftZone.x, leftZone.y, leftZone.w, leftZone.h, 24, inLeft ? "rgba(126, 247, 197, 0.18)" : "rgba(255,255,255,0.05)", "rgba(126, 247, 197, 0.18)");
+    drawRoundedRect(rightZone.x, rightZone.y, rightZone.w, rightZone.h, 24, inRight ? "rgba(219, 164, 255, 0.18)" : "rgba(255,255,255,0.05)", "rgba(219, 164, 255, 0.18)");
+
+    drawText("上一张", leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h / 2 - 10, 24, inLeft ? "#7ef7c5" : "rgba(255,255,255,0.75)");
+    drawText("下一张", rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h / 2 - 10, 24, inRight ? "#dba4ff" : "rgba(255,255,255,0.75)");
+    drawLoadingArc(leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h - 10, 16, dojoHold.left / REQUIRED_HOLD_MS, "#7ef7c5");
+    drawLoadingArc(rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h - 10, 16, dojoHold.right / REQUIRED_HOLD_MS, "#dba4ff");
+
+    drawRoundedRect(centerZone.x, centerZone.y, centerZone.w, centerZone.h, 24, inCenter ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)", "rgba(255,255,255,0.10)");
+    drawText("攥拳 1 秒选中", centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h / 2 - 4, 24, inCenter ? "#8be9fd" : "rgba(255,255,255,0.68)");
+    drawLoadingArc(centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h - 20, 38, dojoHold.center / REQUIRED_HOLD_MS, "#8be9fd");
+
+    if (dojoHold.left >= REQUIRED_HOLD_MS) {
+        moveDojoPreview(-1);
+        dojoHold.left = 0;
+    } else if (dojoHold.right >= REQUIRED_HOLD_MS) {
+        moveDojoPreview(1);
+        dojoHold.right = 0;
+    } else if (dojoHold.center >= REQUIRED_HOLD_MS) {
+        confirmDojoSelection();
+        dojoHold.center = 0;
+    }
+
+    drawText(`背景：${DOJO_BACKGROUND_LIBRARY[dojoState.activeBackgroundIndex]?.label || "bg1"}`, W / 2, H - 54, 20, "rgba(91,63,35,0.80)");
+    drawText(`特效：${DOJO_EFFECT_LIBRARY[dojoState.activeEffectIndex]?.label || "默认"}`, W / 2, H - 28, 20, "rgba(91,63,35,0.80)");
 }
 
 function resetSettingsHold() {
@@ -452,7 +727,200 @@ function saveSettings() {
     localStorage.setItem("cohci_settings", JSON.stringify(settings));
 }
 
-function changeSensitivity(delta) {
+function saveDojoState() {
+    localStorage.setItem("cohci_dojo_state", JSON.stringify(dojoState));
+}
+
+function loadDojoState() {
+    const raw = localStorage.getItem("cohci_dojo_state");
+    const fallback = {
+        focus: "background",
+        previewBackgroundIndex: 0,
+        previewEffectIndex: 0,
+        activeBackgroundIndex: 0,
+        activeEffectIndex: 0,
+    };
+
+    try {
+        if (raw) {
+            const parsed = Object.assign({}, fallback, JSON.parse(raw));
+            dojoState.focus = parsed.focus === "effect" ? "effect" : "background";
+            dojoState.previewBackgroundIndex = clamp(Number(parsed.previewBackgroundIndex) || 0, 0, DOJO_BACKGROUND_LIBRARY.length - 1);
+            dojoState.previewEffectIndex = clamp(Number(parsed.previewEffectIndex) || 0, 0, DOJO_EFFECT_LIBRARY.length - 1);
+            dojoState.activeBackgroundIndex = clamp(Number(parsed.activeBackgroundIndex) || 0, 0, DOJO_BACKGROUND_LIBRARY.length - 1);
+            dojoState.activeEffectIndex = clamp(Number(parsed.activeEffectIndex) || 0, 0, DOJO_EFFECT_LIBRARY.length - 1);
+        }
+    } catch (e) {
+        dojoState = Object.assign({}, fallback);
+    }
+}
+
+function resetDojoHold() {
+    dojoHold.modeToggle = 0;
+    dojoHold.exit = 0;
+    dojoHold.left = 0;
+    dojoHold.center = 0;
+    dojoHold.right = 0;
+}
+
+function getDojoPreviewItem() {
+    if (dojoState.focus === "effect") {
+        return DOJO_EFFECT_LIBRARY[dojoState.previewEffectIndex] || DOJO_EFFECT_LIBRARY[0];
+    }
+    return DOJO_BACKGROUND_LIBRARY[dojoState.previewBackgroundIndex] || DOJO_BACKGROUND_LIBRARY[0];
+}
+
+function moveDojoPreview(direction) {
+    if (dojoState.focus === "effect") {
+        const max = DOJO_EFFECT_LIBRARY.length;
+        dojoState.previewEffectIndex = (dojoState.previewEffectIndex + direction + max) % max;
+    } else {
+        const max = DOJO_BACKGROUND_LIBRARY.length;
+        dojoState.previewBackgroundIndex = (dojoState.previewBackgroundIndex + direction + max) % max;
+    }
+    saveDojoState();
+}
+
+function confirmDojoSelection() {
+    if (dojoState.focus === "effect") {
+        dojoState.activeEffectIndex = dojoState.previewEffectIndex;
+    } else {
+        dojoState.activeBackgroundIndex = dojoState.previewBackgroundIndex;
+    }
+    saveDojoState();
+}
+
+function toggleDojoFocus() {
+    dojoState.focus = dojoState.focus === "background" ? "effect" : "background";
+    if (dojoState.focus === "background") {
+        dojoState.previewBackgroundIndex = dojoState.activeBackgroundIndex;
+    } else {
+        dojoState.previewEffectIndex = dojoState.activeEffectIndex;
+    }
+    resetDojoHold();
+    saveDojoState();
+}
+
+function drawDefaultBackdrop() {
+    const gradient = ctx.createLinearGradient(0, 0, W, H);
+    gradient.addColorStop(0, "#0d1629");
+    gradient.addColorStop(0.55, "#152841");
+    gradient.addColorStop(1, "#0f1320");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, W, H);
+
+    const blobs = [
+        { x: 120, y: 90, r: 140, color: "rgba(126, 247, 197, 0.10)" },
+        { x: 760, y: 110, r: 170, color: "rgba(255, 209, 102, 0.10)" },
+        { x: 680, y: 500, r: 180, color: "rgba(110, 144, 255, 0.12)" },
+    ];
+
+    blobs.forEach((blob) => {
+        const glow = ctx.createRadialGradient(blob.x, blob.y, 0, blob.x, blob.y, blob.r);
+        glow.addColorStop(0, blob.color);
+        glow.addColorStop(1, "transparent");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(blob.x, blob.y, blob.r, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+function drawGameBackdrop() {
+    const background = DOJO_BACKGROUND_LIBRARY[dojoState.activeBackgroundIndex] || DOJO_BACKGROUND_LIBRARY[0];
+    const image = getDojoImage(background.src);
+
+    drawDefaultBackdrop();
+
+    if (image && image.complete && image.naturalWidth > 0) {
+        const ratio = image.naturalWidth / image.naturalHeight;
+        const canvasRatio = W / H;
+        let drawWidth = W;
+        let drawHeight = H;
+        let drawX = 0;
+        let drawY = 0;
+
+        if (ratio > canvasRatio) {
+            drawHeight = H;
+            drawWidth = H * ratio;
+            drawX = (W - drawWidth) / 2;
+        } else {
+            drawWidth = W;
+            drawHeight = W / ratio;
+            drawY = (H - drawHeight) / 2;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = 0.92;
+        ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+        ctx.restore();
+
+        const veil = ctx.createLinearGradient(0, 0, 0, H);
+        veil.addColorStop(0, "rgba(11, 16, 26, 0.30)");
+        veil.addColorStop(0.48, "rgba(11, 16, 26, 0.16)");
+        veil.addColorStop(1, "rgba(11, 16, 26, 0.42)");
+        ctx.fillStyle = veil;
+        ctx.fillRect(0, 0, W, H);
+    }
+
+    const effect = DOJO_EFFECT_LIBRARY[dojoState.activeEffectIndex] || DOJO_EFFECT_LIBRARY[0];
+    if (effect.id !== "none") {
+        drawDojoEffectOverlay(effect.id, 0, 0, W, H, 0.9);
+    }
+
+    const ring = ctx.createLinearGradient(0, 0, W, H);
+    ring.addColorStop(0, "rgba(255,255,255,0.03)");
+    ring.addColorStop(0.5, "rgba(139,233,253,0.03)");
+    ring.addColorStop(1, "rgba(255,255,255,0.03)");
+    ctx.strokeStyle = ring;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(12, 12, W - 24, H - 24);
+}
+
+function drawDojoBackdrop() {
+    const gradient = ctx.createLinearGradient(0, 0, 0, H);
+    gradient.addColorStop(0, "#f4efe6");
+    gradient.addColorStop(0.55, "#ebe0d0");
+    gradient.addColorStop(1, "#d8c7b1");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.fillStyle = "rgba(161, 122, 72, 0.10)";
+    for (let i = 0; i < 12; i += 1) {
+        const x = (i * 83 + (lastTimestamp * 0.012)) % W;
+        const y = 90 + (i % 4) * 110;
+        ctx.fillRect(x, y, 66, 2);
+        ctx.fillRect(x + 12, y + 12, 2, 56);
+    }
+    ctx.restore();
+
+    const mist = ctx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, Math.max(W, H) * 0.7);
+    mist.addColorStop(0, "rgba(255,255,255,0.18)");
+    mist.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = mist;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = "rgba(93, 61, 34, 0.12)";
+    ctx.fillRect(0, H - 64, W, 64);
+    ctx.fillStyle = "rgba(93, 61, 34, 0.22)";
+    ctx.fillRect(0, H - 64, W, 12);
+}
+
+function drawBackground() {
+    if (gameState === GAME.MENU) {
+        updateMenu(delta, input);
+    } else if (gameState === GAME.SETTINGS) {
+        updateSettings(delta, input);
+    } else if (gameState === GAME.PLAYING) {
+        updatePlaying(delta, input);
+    } else if (gameState === GAME.GAMEOVER) {
+        updateGameover(delta, input);
+    } else if (gameState === GAME.DOJO) {
+        updateDojo(delta, input);
+    } else if (gameState === GAME.SHOP) {
+        updateShop(delta, input);
+    }
     const settings = getSettingsState();
     settings.sensitivity = clamp(Math.round(((Number(settings.sensitivity) || 1.0) + delta) * 20) / 20, 0.6, 1.6);
     saveSettings();
@@ -695,11 +1163,11 @@ function drawTimeStopHud() {
         drawText(`TIME STOP ${(timeStopTimer / 1000).toFixed(1)}s`, W / 2, H - 44, 34, "#bff5ff");
         ctx.restore();
     } else if (timeStopCooldown > 0) {
-        drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+        drawText(`张开手掌冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
     } else if (!window.cameraReady) {
-        drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
+        drawText("摄像头连接后可五指张开时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
     } else {
-        drawText("响指时停就绪", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
+        drawText("五指张开时停就绪", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
     }
 
     if (timeStopMessageTimer > 0) {
@@ -707,12 +1175,22 @@ function drawTimeStopHud() {
         ctx.globalAlpha = clamp(timeStopMessageTimer / 260, 0, 1);
         ctx.shadowColor = "#9de7ff";
         ctx.shadowBlur = 34;
-        drawText("SNAP FREEZE", W / 2, 236, 48, "#bff5ff");
+        drawText("OPEN PALM FREEZE", W / 2, 236, 48, "#bff5ff");
         ctx.restore();
     }
 }
 
 function drawBackground() {
+    if (gameState === GAME.PLAYING) {
+        drawGameBackdrop();
+        return;
+    }
+
+    if (gameState === GAME.DOJO) {
+        drawDojoBackdrop();
+        return;
+    }
+
     const gradient = ctx.createLinearGradient(0, 0, W, H);
     gradient.addColorStop(0, "#0d1629");
     gradient.addColorStop(0.55, "#152841");
@@ -1113,6 +1591,8 @@ function resetGame(mode) {
     playExitHold = 0;
     resetComboStats();
     resetTimeStop();
+    fistLatched = false;
+    clearCooldownUntil = 0;
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -1141,6 +1621,9 @@ function returnToMenu() {
     playExitHold = 0;
     resetComboStats();
     resetTimeStop();
+    fistLatched = false;
+    clearCooldownUntil = 0;
+    resetDojoHold();
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
     }
@@ -1160,6 +1643,8 @@ function syncBgmForScene() {
 
     if (gameState === GAME.PLAYING) {
         window.playBgm(chosenMode === MODES.classic ? "classic" : chosenMode === MODES.zen ? "zen" : "arcade");
+    } else if (gameState === GAME.DOJO) {
+        window.playBgm("dojo");
     } else {
         window.playBgm("menu");
     }
@@ -1207,7 +1692,7 @@ function getInputPosition() {
 
     lastInputWasHand = cameraActive;
 
-    return { x: pointerX, y: pointerY, active, fist: Boolean(window.isFist && cameraActive) };
+    return { x: pointerX, y: pointerY, active, fist: Boolean(window.isFist && cameraActive), thumbUp: Boolean(window.isThumbsUp && cameraActive) };
 }
 
 // 在一组交互 item 中选出距离指针最近且在阈值内的索引
@@ -1271,6 +1756,14 @@ function updateMenu(delta, input) {
             settingsSliderDragging = false;
             settingsSliderDragSource = null;
             settingsLatchedIndex = -1;
+        } else if (trigger.mode === "dojo") {
+            gameState = GAME.DOJO;
+            resetDojoHold();
+            syncBgmForScene();
+        } else if (trigger.mode === "dojo") {
+            gameState = GAME.DOJO;
+            resetDojoHold();
+            syncBgmForScene();
         } else if (trigger.mode === "shop") { 
             gameState = GAME.SHOP;
         } else { 
@@ -1485,6 +1978,8 @@ function updateSettings(delta, input) {
 }
 
 function updatePlaying(delta, input) {
+    const now = performance.now();
+    const clearCooldownRemaining = Math.max(0, clearCooldownUntil - now);
     const exitLeft = 20;
     const exitTop = 18;
     const exitWidth = 120;
@@ -1617,6 +2112,9 @@ function updatePlaying(delta, input) {
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
     drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
+    if (clearCooldownRemaining > 0) {
+        drawText(`清屏冷却 ${Math.ceil(clearCooldownRemaining / 1000)}s`, W / 2, 108, 18, "rgba(255,107,107,0.82)", "center");
+    }
     drawComboHud();
     drawTimeStopHud();
     if (chosenMode === MODES.classic) {
@@ -1624,31 +2122,32 @@ function updatePlaying(delta, input) {
     } else {
         drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
-    // 攥拳一键清屏逻辑 (建议放在 updatePlaying 的开头或结尾部分)
-if (input.fist) {
-    if (!fistLatched && clearItems > 0) {
-        fistLatched = true;
-        clearItems -= 1;
-        resetCombo();
-        
-        // 播放爆炸音效
-        if (window.playBomb) window.playBomb();
-        
-        // 销毁场上所有非炸弹水果
-        fruits.forEach(fruit => {
-            if (fruit.alive && fruit.type !== "bomb") {
-                fruit.alive = false;
-                score += 1;
-                money += 1;
-                // 此处你可自行决定是否调用 spawnParticles(fruit) 等特效
-            }
-        });
-        saveShopData();
+    // 竖大拇指一键清屏逻辑
+    if (input.thumbUp) {
+        if (!fistLatched && clearItems > 0 && clearCooldownRemaining <= 0) {
+            fistLatched = true;
+            clearItems -= 1;
+            clearCooldownUntil = now + CLEAR_COOLDOWN_MS;
+            resetCombo();
+
+            // 播放爆炸音效
+            if (window.playBomb) window.playBomb();
+
+            // 销毁场上所有非炸弹水果
+            fruits.forEach(fruit => {
+                if (fruit.alive && fruit.type !== "bomb") {
+                    fruit.alive = false;
+                    score += 1;
+                    money += 1;
+                    // 此处你可自行决定是否调用 spawnParticles(fruit) 等特效
+                }
+            });
+            saveShopData();
+        }
+    } else {
+        // 解除手势后重置触发器
+        fistLatched = false; 
     }
-} else {
-    // 松开拳头时重置触发器
-    fistLatched = false; 
-}
 }
 
 function updateGameover(delta, input) {
@@ -1715,10 +2214,11 @@ function loop(timestamp) {
         updatePlaying(delta, input);
     } else if (gameState === GAME.GAMEOVER) {
         updateGameover(delta, input);
+    } else if (gameState === GAME.DOJO) {
+        updateDojo(delta, input);
+    } else if (gameState === GAME.SHOP) {
+        updateShop(delta, input);
     }
-    else if (gameState === GAME.SHOP) {
-    updateShop(delta, input);
-}
     drawPointer(input);
 
 
@@ -1772,6 +2272,14 @@ canvas.addEventListener("pointerdown", (event) => {
                 settingsSliderDragging = false;
                 settingsSliderDragSource = null;
                 settingsLatchedIndex = -1;
+            } else if (selected.mode === "dojo") {
+                gameState = GAME.DOJO;
+                resetDojoHold();
+                syncBgmForScene();
+            } else if (selected.mode === "dojo") {
+                gameState = GAME.DOJO;
+                resetDojoHold();
+                syncBgmForScene();
             } 
             else if (selected.mode === "shop") { 
                 gameState = GAME.SHOP;
@@ -1854,6 +2362,7 @@ function loadSettings() {
     }
     window.settings = s;
     applySettingsState();
+    loadDojoState();
     saveSettings();
 }
 

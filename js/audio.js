@@ -2,6 +2,7 @@ const AudioEngine = (() => {
     const state = {
         context: null,
         unlocked: false,
+        errorCount: 0,
         bgm: {
             mode: null,
             audio: null,
@@ -51,6 +52,9 @@ const AudioEngine = (() => {
             "assets/sounds/bgm/menu/menu-01.mp3",
             "assets/sounds/bgm/menu/menu-02.mp3",
         ],
+        dojo: [
+            "assets/sounds/bgm/dojo/dojo-01.mp3",
+        ],
         classic: [
             "assets/sounds/bgm/classic/classic-01.mp3",
             "assets/sounds/bgm/classic/classic-02.mp3",
@@ -98,6 +102,7 @@ const AudioEngine = (() => {
 
     function stopBgm() {
         state.bgm.token += 1;
+        state.errorCount = 0;
         if (state.bgm.audio) {
             state.bgm.audio.pause();
             state.bgm.audio.onended = null;
@@ -139,6 +144,7 @@ const AudioEngine = (() => {
 
         const token = state.bgm.token + 1;
         state.bgm.token = token;
+        state.errorCount = 0;
 
         if (state.bgm.audio) {
             state.bgm.audio.pause();
@@ -163,6 +169,11 @@ const AudioEngine = (() => {
         audio.addEventListener("error", () => {
             // 如果某个文件暂时不存在，直接换下一首，不打断流程。
             if (state.bgm.mode !== playlistMode || state.bgm.token !== token) {
+                return;
+            }
+            state.errorCount += 1;
+            if (playlistMode === "dojo" && state.errorCount >= 2) {
+                playBgmTrack("menu");
                 return;
             }
             playBgmTrack(playlistMode);
@@ -279,7 +290,7 @@ const AudioEngine = (() => {
     function playBomb() {
         if (!state.unlocked && !unlock()) return;
         if (window.settings && window.settings.muted) return;
-        playSound("炸弹爆炸");
+        playSound("炸弹爆炸F");
     }
 
     function playMiss() {
