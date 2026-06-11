@@ -43,7 +43,15 @@ const TIME_STOP_COOLDOWN_MS = 7600;
 const TIME_STOP_SLOW_FACTOR = 0.04;
 const TIME_STOP_BGM_VOLUME_FACTOR = 0.18;
 const TIME_STOP_SOUND = "时间停止";
-const CLEAR_COOLDOWN_MS = 3500;
+const ADAPTIVE_CALIBRATION_MS = 3600;
+const ADAPTIVE_SAMPLE_INTERVAL_MS = 45;
+const ADAPTIVE_GRID_COLS = 3;
+const ADAPTIVE_GRID_ROWS = 3;
+const ADAPTIVE_MAX_POINTS = 900;
+const ADAPTIVE_MIN_SENSITIVITY_SCALE = 0.78;
+const ADAPTIVE_MAX_SENSITIVITY_SCALE = 1.38;
+const ADAPTIVE_PROFILE_KEY = "cohci_adaptive_profile";
+const ADAPTIVE_SCORE_THRESHOLD = 4;
 
 const EFFECT_LEVELS = {
     low: {
@@ -82,12 +90,12 @@ const EFFECT_LEVEL_ORDER = ["low", "medium", "high"];
 
 // 将原本的 menuItems 替换为以下代码：
 const menuItems = [
-    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 180, color: "#7ef7c5" },
-    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 270, color: "#6db8ff" },
-    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 360, color: "#dba4ff" },
-    { text: "道场", mode: "dojo", x: W / 2, y: 450, color: "#8be9fd" },
-    { text: "设置", mode: "settings", x: W / 2, y: 540, color: "#ffd166" },
-    { text: "商店", mode: "shop", x: W - 160, y: H - 50, color: "#ff9f1c" }, // 移动到右下角
+    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 248, width: 300, height: 58, color: "#7ef7c5" },
+    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 318, width: 300, height: 58, color: "#6db8ff" },
+    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 388, width: 300, height: 58, color: "#dba4ff" },
+    { text: "道场", mode: "dojo", x: W / 2, y: 458, width: 300, height: 58, color: "#8be9fd" },
+    { text: "设置", mode: "settings", x: W / 2 - 120, y: 538, width: 210, height: 52, color: "#ffd166" },
+    { text: "商店", mode: "shop", x: W / 2 + 135, y: 538, width: 190, height: 52, color: "#ff9f1c" },
 ];
 
 const settingsItems = [
@@ -105,8 +113,8 @@ const settingsSliderRows = [
 ];
 
 const gameoverItems = [
-    { text: "重新开始", action: "restart", x: W / 2 - 150, y: 405, color: "#7ef7c5" },
-    { text: "返回菜单", action: "menu", x: W / 2 + 150, y: 405, color: "#ffd166" },
+    { text: "重新开始", action: "restart", x: W / 2 - 150, y: 548, color: "#7ef7c5" },
+    { text: "返回菜单", action: "menu", x: W / 2 + 150, y: 548, color: "#ffd166" },
 ];
 
 const loadoutOptions = [
@@ -132,7 +140,7 @@ let splats = [];
 let comboEffects = [];
 let clearEffects = [];
 let trail = [];
-let menuHold = [0, 0, 0, 0,0];
+let menuHold = menuItems.map(() => 0);
 let loadoutHold = loadoutOptions.map(() => 0);
 let gameoverHold = [0, 0];
 let playExitHold = 0;
@@ -156,15 +164,14 @@ let settingsSliderDragSource = null;
 let settingsSliderDragTarget = null; // "sensitivity" | "music" | "sfx"
 let settingsLatchedIndex = -1;
 // 金钱与商店数据
-let money = parseInt(localStorage.getItem("fn_money") || "0");
-let clearItems = parseInt(localStorage.getItem("fn_clear_items") || "0");
-let unlockedColors = JSON.parse(localStorage.getItem("fn_colors") || '["#cff4ff"]'); // 默认初始颜色
-let currentColor = localStorage.getItem("fn_current_color") || "#cff4ff";
+let money = readStoredInteger("fn_money", 0);
+let clearItems = readStoredInteger("fn_clear_items", 0);
+let timeStopItems = readStoredInteger("fn_time_stop_items", 0);
+let unlockedColors = readStoredColors(); // 默认初始颜色
+let currentColor = readStoredCurrentColor(unlockedColors);
+let carriedItem = CARRY_ITEM.NONE;
 
-// 状态控制
-let fistLatched = false; // 用于防止长按拳头触发多次清屏
-let clearCooldownUntil = 0;
-let shopHold = [0, 0, 0, 0]; // 控制商店商品的长按购买
+let shopHold = [0, 0, 0, 0, 0]; // 控制商店商品的长按购买
 let shopExitHold = 0; 
 let shopMessage = "";        // 商店提示信息文本
 let shopMessageTimer = 0;
@@ -177,6 +184,10 @@ let timeStopMessageTimer = 0;
 let timeStopX = W / 2;
 let timeStopY = H / 2;
 let timeStopBgmDucked = false;
+let fruitIdSeed = 1;
+let adaptiveProfile = loadAdaptiveProfile();
+let adaptiveSession = createAdaptiveSession();
+window.adaptiveSensitivityScale = 1;
 
 const shopItems = [
     { type: "item", item: CARRY_ITEM.CLEAR, text: "清屏道具", detail: "¥20", cost: 20, x: W / 2 - 220, y: 230, width: 230, height: 76, color: "#ff6b6b" },
@@ -1166,10 +1177,471 @@ function distance(ax, ay, bx, by) {
     return Math.hypot(ax - bx, ay - by);
 }
 
+function createAdaptiveGrid() {
+    return Array.from({ length: ADAPTIVE_GRID_ROWS }, () =>
+        Array.from({ length: ADAPTIVE_GRID_COLS }, () => ({
+            visitMs: 0,
+            hits: 0,
+            misses: 0,
+            bombs: 0,
+            spawns: 0,
+        }))
+    );
+}
+
+function createAdaptiveSession() {
+    return {
+        enabled: true,
+        phase: "idle",
+        calibrationRemaining: ADAPTIVE_CALIBRATION_MS,
+        elapsedMs: 0,
+        playElapsedMs: 0,
+        baseSensitivity: 1,
+        roundSensitivityScale: 1,
+        previousRound: null,
+        roundIndex: 1,
+        sensitivityScale: 1,
+        comfortRect: { x: W * 0.18, y: H * 0.18, width: W * 0.64, height: H * 0.64 },
+        calibrationSamples: [],
+        samples: [],
+        lastSampleTime: 0,
+        lastPoint: null,
+        totalDistance: 0,
+        speedEma: 0,
+        fatigueEma: 0,
+        fatigueTrend: [],
+        grid: createAdaptiveGrid(),
+        hitPoints: [],
+        missPoints: [],
+        bombPoints: [],
+        recentEdgeMissPressure: 0,
+        strategy: "本局固定灵敏度",
+        calibrationSummary: "",
+        nextScale: 1,
+        adjustmentReason: "",
+        comparison: null,
+        report: null,
+        noticeTimer: 0,
+        notice: "",
+    };
+}
+
+function loadAdaptiveProfile() {
+    const fallback = { nextScale: 1, roundIndex: 0, lastRound: null };
+    try {
+        const parsed = JSON.parse(readStoredValue(ADAPTIVE_PROFILE_KEY) || "null");
+        if (!parsed || typeof parsed !== "object") return fallback;
+        const nextScale = clamp(Number(parsed.nextScale) || 1, ADAPTIVE_MIN_SENSITIVITY_SCALE, ADAPTIVE_MAX_SENSITIVITY_SCALE);
+        const roundIndex = Math.max(0, Number.parseInt(parsed.roundIndex, 10) || 0);
+        return {
+            nextScale,
+            roundIndex,
+            lastRound: parsed.lastRound && typeof parsed.lastRound === "object" ? parsed.lastRound : null,
+        };
+    } catch (error) {
+        return fallback;
+    }
+}
+
+function saveAdaptiveProfile(profile) {
+    adaptiveProfile = profile;
+    writeStoredValue(ADAPTIVE_PROFILE_KEY, JSON.stringify(profile));
+}
+
+function isAdaptiveEnabled() {
+    return getSettingsState().autoSensitivity !== false;
+}
+
+function startAdaptiveSession() {
+    adaptiveSession = createAdaptiveSession();
+    adaptiveSession.enabled = isAdaptiveEnabled();
+    adaptiveSession.phase = adaptiveSession.enabled ? "calibrating" : "playing";
+    adaptiveSession.baseSensitivity = Number(getSettingsState().sensitivity) || 1;
+    adaptiveSession.previousRound = adaptiveProfile.lastRound;
+    adaptiveSession.roundIndex = (Number(adaptiveProfile.roundIndex) || 0) + 1;
+    adaptiveSession.roundSensitivityScale = adaptiveSession.enabled
+        ? clamp(Number(adaptiveProfile.nextScale) || 1, ADAPTIVE_MIN_SENSITIVITY_SCALE, ADAPTIVE_MAX_SENSITIVITY_SCALE)
+        : 1;
+    adaptiveSession.sensitivityScale = adaptiveSession.roundSensitivityScale;
+    adaptiveSession.nextScale = adaptiveSession.roundSensitivityScale;
+    window.adaptiveSensitivityScale = adaptiveSession.roundSensitivityScale;
+}
+
+function getAdaptiveCellAt(x, y) {
+    const col = clamp(Math.floor((clamp(x, 0, W - 1) / W) * ADAPTIVE_GRID_COLS), 0, ADAPTIVE_GRID_COLS - 1);
+    const row = clamp(Math.floor((clamp(y, 0, H - 1) / H) * ADAPTIVE_GRID_ROWS), 0, ADAPTIVE_GRID_ROWS - 1);
+    return { row, col, cell: adaptiveSession.grid[row][col] };
+}
+
+function getAdaptiveCellLabel(row, col) {
+    const vertical = ["上", "中", "下"][row] || "中";
+    const horizontal = ["左", "中", "右"][col] || "中";
+    if (row === 1 && col === 1) return "中心区域";
+    if (row === 1) return `${horizontal}侧`;
+    if (col === 1) return `${vertical}方`;
+    return `${horizontal}${vertical}`;
+}
+
+function rememberAdaptivePoint(list, point, limit = 90) {
+    list.push(point);
+    if (list.length > limit) {
+        list.splice(0, list.length - limit);
+    }
+}
+
+function appendAdaptiveSample(input, delta, now) {
+    if (!adaptiveSession.enabled) return;
+    if (now - adaptiveSession.lastSampleTime < ADAPTIVE_SAMPLE_INTERVAL_MS && adaptiveSession.lastPoint) return;
+
+    const x = clamp(input.x, 0, W);
+    const y = clamp(input.y, 0, H);
+    let speed = 0;
+    if (adaptiveSession.lastPoint) {
+        const dt = Math.max(0.016, (now - adaptiveSession.lastPoint.t) / 1000);
+        const moved = distance(x, y, adaptiveSession.lastPoint.x, adaptiveSession.lastPoint.y);
+        speed = moved / dt;
+        adaptiveSession.totalDistance += moved;
+    }
+
+    adaptiveSession.speedEma = adaptiveSession.speedEma === 0 ? speed : adaptiveSession.speedEma * 0.82 + speed * 0.18;
+    const cellInfo = getAdaptiveCellAt(x, y);
+    cellInfo.cell.visitMs += delta;
+
+    const sample = { x, y, t: now, speed };
+    adaptiveSession.samples.push(sample);
+    if (adaptiveSession.samples.length > ADAPTIVE_MAX_POINTS) {
+        adaptiveSession.samples.splice(0, adaptiveSession.samples.length - ADAPTIVE_MAX_POINTS);
+    }
+    if (adaptiveSession.phase === "calibrating") {
+        adaptiveSession.calibrationSamples.push(sample);
+    }
+
+    const seconds = Math.max(1, adaptiveSession.playElapsedMs / 1000);
+    const distancePerSecond = adaptiveSession.totalDistance / seconds;
+    const speedLoad = clamp((adaptiveSession.speedEma - 430) / 950, 0, 1);
+    const distanceLoad = clamp((distancePerSecond - 380) / 700, 0, 1);
+    const fatigue = clamp(speedLoad * 0.58 + distanceLoad * 0.42, 0, 1);
+    adaptiveSession.fatigueEma = adaptiveSession.fatigueEma * 0.92 + fatigue * 0.08;
+
+    const lastTrend = adaptiveSession.fatigueTrend[adaptiveSession.fatigueTrend.length - 1];
+    if (!lastTrend || now - lastTrend.t > 1000) {
+        adaptiveSession.fatigueTrend.push({ t: now, value: adaptiveSession.fatigueEma });
+        if (adaptiveSession.fatigueTrend.length > 80) {
+            adaptiveSession.fatigueTrend.shift();
+        }
+    }
+
+    adaptiveSession.lastPoint = sample;
+    adaptiveSession.lastSampleTime = now;
+}
+
+function getBoundsFromPoints(points) {
+    if (!points.length) {
+        return { minX: W * 0.32, maxX: W * 0.68, minY: H * 0.28, maxY: H * 0.72 };
+    }
+    return points.reduce((bounds, point) => ({
+        minX: Math.min(bounds.minX, point.x),
+        maxX: Math.max(bounds.maxX, point.x),
+        minY: Math.min(bounds.minY, point.y),
+        maxY: Math.max(bounds.maxY, point.y),
+    }), { minX: W, maxX: 0, minY: H, maxY: 0 });
+}
+
+function expandRectFromBounds(bounds) {
+    const spanX = Math.max(180, bounds.maxX - bounds.minX);
+    const spanY = Math.max(150, bounds.maxY - bounds.minY);
+    const padX = clamp(spanX * 0.34, 70, 160);
+    const padY = clamp(spanY * 0.34, 55, 125);
+    const x = clamp(bounds.minX - padX, 80, W - 180);
+    const y = clamp(bounds.minY - padY, 70, H - 160);
+    const right = clamp(bounds.maxX + padX, x + 180, W - 80);
+    const bottom = clamp(bounds.maxY + padY, y + 160, H - 80);
+    return { x, y, width: right - x, height: bottom - y };
+}
+
+function finishAdaptiveCalibration() {
+    const samples = adaptiveSession.calibrationSamples.length >= 8 ? adaptiveSession.calibrationSamples : adaptiveSession.samples;
+    const bounds = getBoundsFromPoints(samples);
+    const rawCoverageX = clamp((bounds.maxX - bounds.minX) / W, 0, 1);
+    const rawCoverageY = clamp((bounds.maxY - bounds.minY) / H, 0, 1);
+    const tooLittleMotion = samples.length < 10 || rawCoverageX < 0.08 || rawCoverageY < 0.08;
+    adaptiveSession.comfortRect = tooLittleMotion
+        ? { x: W * 0.22, y: H * 0.20, width: W * 0.56, height: H * 0.58 }
+        : expandRectFromBounds(bounds);
+
+    const coverageX = tooLittleMotion ? 0.38 : clamp(rawCoverageX, 0.15, 1);
+    const coverageY = tooLittleMotion ? 0.38 : clamp(rawCoverageY, 0.15, 1);
+    const coverage = (coverageX + coverageY) / 2;
+    const targetScale = adaptiveSession.roundSensitivityScale;
+    adaptiveSession.sensitivityScale = targetScale;
+    adaptiveSession.phase = "playing";
+    adaptiveSession.calibrationSummary = tooLittleMotion
+        ? "校准轨迹不足，先采用默认舒适区"
+        : coverage < 0.42
+        ? "活动范围偏窄，结算时会倾向提高下一局灵敏度"
+        : coverage > 0.68
+            ? "活动范围充足，可评估是否降低过高灵敏度"
+            : "活动范围适中，作为本局基线记录";
+    adaptiveSession.strategy = "本局固定灵敏度";
+    adaptiveSession.notice = `校准完成：${adaptiveSession.calibrationSummary}`;
+    adaptiveSession.noticeTimer = 1800;
+    window.adaptiveSensitivityScale = targetScale;
+}
+
+function updateAdaptiveTarget(delta) {
+    if (!adaptiveSession.enabled || adaptiveSession.phase !== "playing") return;
+
+    adaptiveSession.recentEdgeMissPressure = Math.max(0, adaptiveSession.recentEdgeMissPressure - delta / 8500);
+    adaptiveSession.strategy = "本局固定灵敏度";
+
+    if (adaptiveSession.noticeTimer > 0) {
+        adaptiveSession.noticeTimer = Math.max(0, adaptiveSession.noticeTimer - delta);
+    }
+    window.adaptiveSensitivityScale = adaptiveSession.roundSensitivityScale;
+}
+
+function updateAdaptiveSession(delta, input) {
+    if (!adaptiveSession.enabled || gameState !== GAME.PLAYING) {
+        window.adaptiveSensitivityScale = 1;
+        return;
+    }
+
+    const now = performance.now();
+    adaptiveSession.elapsedMs += delta;
+    if (adaptiveSession.phase === "playing") {
+        adaptiveSession.playElapsedMs += delta;
+    }
+    appendAdaptiveSample(input, delta, now);
+
+    if (adaptiveSession.phase === "calibrating") {
+        adaptiveSession.calibrationRemaining = Math.max(0, adaptiveSession.calibrationRemaining - delta);
+        if (adaptiveSession.calibrationRemaining <= 0) {
+            finishAdaptiveCalibration();
+        }
+        return;
+    }
+
+    updateAdaptiveTarget(delta);
+}
+
+function isPointOutsideComfortRect(x, y) {
+    const rect = adaptiveSession.comfortRect;
+    return x < rect.x || x > rect.x + rect.width || y < rect.y || y > rect.y + rect.height;
+}
+
+function recordAdaptiveSpawn(fruit) {
+    if (!adaptiveSession.enabled || adaptiveSession.phase !== "playing") return;
+    const cellInfo = getAdaptiveCellAt(fruit.x, H * 0.55);
+    cellInfo.cell.spawns += 1;
+}
+
+function recordAdaptiveFruitResult(fruit, result) {
+    if (!adaptiveSession.enabled) return;
+    const x = clamp(fruit.x, 0, W);
+    const y = clamp(fruit.y, 0, H);
+    const cellInfo = getAdaptiveCellAt(x, y);
+
+    if (result === "hit") {
+        cellInfo.cell.hits += 1;
+        rememberAdaptivePoint(adaptiveSession.hitPoints, { x, y });
+        adaptiveSession.recentEdgeMissPressure = Math.max(0, adaptiveSession.recentEdgeMissPressure - 0.04);
+    } else if (result === "miss") {
+        cellInfo.cell.misses += 1;
+        rememberAdaptivePoint(adaptiveSession.missPoints, { x, y });
+        if (isPointOutsideComfortRect(x, y)) {
+            adaptiveSession.recentEdgeMissPressure = clamp(adaptiveSession.recentEdgeMissPressure + 0.22, 0, 1);
+        }
+    } else if (result === "bomb") {
+        cellInfo.cell.bombs += 1;
+        rememberAdaptivePoint(adaptiveSession.bombPoints, { x, y }, 45);
+    }
+}
+
+function getAdaptiveRoundScore({ hitRate, coveragePercent, fatigueEnd, bestComboValue }) {
+    const comboScore = clamp(bestComboValue * 8, 0, 100);
+    return Math.round(
+        hitRate * 0.46 +
+        coveragePercent * 0.24 +
+        (100 - fatigueEnd) * 0.18 +
+        comboScore * 0.12
+    );
+}
+
+function decideNextSensitivity(summary, previousRound) {
+    let nextScale = summary.scale;
+    let reason = "保持当前灵敏度，继续收集下一局数据";
+
+    if (summary.coveragePercent < 28) {
+        nextScale += 0.10;
+        reason = "覆盖范围偏小，下局提高灵敏度以减少大幅伸手";
+    } else if (summary.hitRate < 55 && summary.avgSpeed > 900) {
+        nextScale -= 0.08;
+        reason = "移动速度高但命中率低，下局降低灵敏度以减少过冲";
+    } else if (summary.hitRate < 60) {
+        nextScale += 0.06;
+        reason = "命中率偏低且覆盖不足迹象明显，下局轻微提高灵敏度";
+    } else if (summary.fatigueEnd > 68 && summary.coveragePercent > 42) {
+        nextScale -= 0.06;
+        reason = "疲劳较高但覆盖已足够，下局降低灵敏度让动作更稳";
+    } else if (summary.hitRate > 78 && summary.coveragePercent > 58 && summary.fatigueEnd < 42) {
+        nextScale -= 0.03;
+        reason = "本局表现稳定，下局轻微降低灵敏度验证是否更省力";
+    }
+
+    if (previousRound && Math.abs(summary.scale - previousRound.scale) > 0.015) {
+        const scoreDelta = summary.roundScore - previousRound.roundScore;
+        const scaleWentUp = summary.scale > previousRound.scale;
+        const scaleWentDown = summary.scale < previousRound.scale;
+        if (scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD && scaleWentUp) {
+            nextScale = summary.scale - 0.08;
+            reason = "上调后表现下降，下局回退部分灵敏度";
+        } else if (scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD && scaleWentDown) {
+            nextScale = summary.scale + 0.08;
+            reason = "下调后表现下降，下局回退部分灵敏度";
+        }
+    }
+
+    return {
+        nextScale: Math.round(clamp(nextScale, ADAPTIVE_MIN_SENSITIVITY_SCALE, ADAPTIVE_MAX_SENSITIVITY_SCALE) * 100) / 100,
+        reason,
+    };
+}
+
+function compareAdaptiveRounds(current, previous) {
+    if (!previous) {
+        return {
+            label: "首次记录",
+            scoreDelta: 0,
+            hitRateDelta: 0,
+            coverageDelta: 0,
+            fatigueDelta: 0,
+            detail: "完成下一局后将显示对比结果",
+        };
+    }
+
+    const scoreDelta = current.roundScore - previous.roundScore;
+    const hitRateDelta = current.hitRate - previous.hitRate;
+    const coverageDelta = current.coveragePercent - previous.coveragePercent;
+    const fatigueDelta = current.fatigueEnd - previous.fatigueEnd;
+    const label = scoreDelta >= ADAPTIVE_SCORE_THRESHOLD
+        ? "优于上一局"
+        : scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD
+            ? "低于上一局"
+            : "基本持平";
+
+    return {
+        label,
+        scoreDelta,
+        hitRateDelta,
+        coverageDelta,
+        fatigueDelta,
+        detail: `交互分 ${scoreDelta >= 0 ? "+" : ""}${scoreDelta}，命中 ${hitRateDelta >= 0 ? "+" : ""}${hitRateDelta}%`,
+    };
+}
+
+function getAdaptiveReport() {
+    if (adaptiveSession.report) return adaptiveSession.report;
+
+    const samples = adaptiveSession.samples;
+    const bounds = getBoundsFromPoints(samples);
+    const coverageWidth = Math.max(0, bounds.maxX - bounds.minX);
+    const coverageHeight = Math.max(0, bounds.maxY - bounds.minY);
+    const coveragePercent = Math.round(clamp((coverageWidth * coverageHeight) / (W * H), 0, 1) * 100);
+    const attempts = adaptiveSession.hitPoints.length + adaptiveSession.missPoints.length;
+    const hitRate = attempts > 0 ? Math.round((adaptiveSession.hitPoints.length / attempts) * 100) : 0;
+    const trend = adaptiveSession.fatigueTrend;
+    const firstFatigue = trend.length ? trend.slice(0, Math.max(1, Math.ceil(trend.length * 0.25))).reduce((sum, item) => sum + item.value, 0) / Math.max(1, Math.ceil(trend.length * 0.25)) : 0;
+    const lastSlice = trend.slice(-Math.max(1, Math.ceil(trend.length * 0.25)));
+    const lastFatigue = lastSlice.length ? lastSlice.reduce((sum, item) => sum + item.value, 0) / lastSlice.length : adaptiveSession.fatigueEma;
+    const fatigueDelta = lastFatigue - firstFatigue;
+    const fatigueTrendText = fatigueDelta > 0.10 ? "上升" : fatigueDelta < -0.08 ? "下降" : "平稳";
+    const avgSpeed = Math.round(adaptiveSession.samples.reduce((sum, item) => sum + item.speed, 0) / Math.max(1, adaptiveSession.samples.length));
+
+    let hardest = { row: 1, col: 1, score: -1 };
+    let maxVisit = 1;
+    adaptiveSession.grid.forEach((row) => row.forEach((cell) => {
+        maxVisit = Math.max(maxVisit, cell.visitMs);
+    }));
+    adaptiveSession.grid.forEach((row, rowIndex) => row.forEach((cell, colIndex) => {
+        const cellAttempts = cell.hits + cell.misses;
+        const missRate = cellAttempts ? cell.misses / cellAttempts : 0;
+        const lowVisit = 1 - cell.visitMs / maxVisit;
+        const score = lowVisit * 0.55 + missRate * 0.45 + Math.min(0.25, cell.misses * 0.05);
+        if (score > hardest.score) {
+            hardest = { row: rowIndex, col: colIndex, score };
+        }
+    }));
+
+    const roundSummary = {
+        roundIndex: adaptiveSession.roundIndex,
+        mode: chosenMode,
+        scale: Math.round(adaptiveSession.roundSensitivityScale * 100) / 100,
+        score,
+        bestCombo,
+        coveragePercent,
+        hitRate,
+        fatigueEnd: Math.round(lastFatigue * 100),
+        avgSpeed,
+        hardestLabel: getAdaptiveCellLabel(hardest.row, hardest.col),
+        hardestRow: hardest.row,
+        hardestCol: hardest.col,
+    };
+    roundSummary.roundScore = getAdaptiveRoundScore({
+        hitRate,
+        coveragePercent,
+        fatigueEnd: roundSummary.fatigueEnd,
+        bestComboValue: bestCombo,
+    });
+    const previousRound = adaptiveSession.previousRound;
+    const comparison = compareAdaptiveRounds(roundSummary, previousRound);
+    const decision = decideNextSensitivity(roundSummary, previousRound);
+    adaptiveSession.nextScale = decision.nextScale;
+    adaptiveSession.adjustmentReason = decision.reason;
+    adaptiveSession.comparison = comparison;
+
+    saveAdaptiveProfile({
+        nextScale: decision.nextScale,
+        roundIndex: adaptiveSession.roundIndex,
+        lastRound: Object.assign({}, roundSummary, {
+            nextScale: decision.nextScale,
+            adjustmentReason: decision.reason,
+        }),
+    });
+
+    adaptiveSession.report = {
+        roundIndex: adaptiveSession.roundIndex,
+        coveragePercent,
+        coverageWidth: Math.round(coverageWidth),
+        coverageHeight: Math.round(coverageHeight),
+        hitRate,
+        fatigueTrendText,
+        fatigueStart: Math.round(firstFatigue * 100),
+        fatigueEnd: Math.round(lastFatigue * 100),
+        avgSpeed,
+        hardestLabel: getAdaptiveCellLabel(hardest.row, hardest.col),
+        hardestRow: hardest.row,
+        hardestCol: hardest.col,
+        roundScore: roundSummary.roundScore,
+        currentScale: roundSummary.scale,
+        nextScale: decision.nextScale,
+        adjustmentReason: decision.reason,
+        previousRound,
+        comparison,
+        calibrationSummary: adaptiveSession.calibrationSummary,
+        recommendation: decision.reason,
+        grid: adaptiveSession.grid.map((row) => row.map((cell) => Object.assign({}, cell))),
+        hitPoints: adaptiveSession.hitPoints.slice(),
+        missPoints: adaptiveSession.missPoints.slice(),
+        comfortRect: Object.assign({}, adaptiveSession.comfortRect),
+    };
+    return adaptiveSession.report;
+}
+
 function getSettingsState() {
     if (!window.settings) {
-        window.settings = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+        window.settings = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     }
+    window.settings.autoSensitivity = window.settings.autoSensitivity !== false;
     if (!EFFECT_LEVELS[window.settings.effectLevel]) {
         window.settings.effectLevel = "medium";
     }
@@ -1382,25 +1854,6 @@ function drawDojoBackdrop() {
     ctx.fillRect(0, H - 64, W, 12);
 }
 
-function drawBackground() {
-    if (gameState === GAME.MENU) {
-        updateMenu(delta, input);
-    } else if (gameState === GAME.SETTINGS) {
-        updateSettings(delta, input);
-    } else if (gameState === GAME.PLAYING) {
-        updatePlaying(delta, input);
-    } else if (gameState === GAME.GAMEOVER) {
-        updateGameover(delta, input);
-    } else if (gameState === GAME.DOJO) {
-        updateDojo(delta, input);
-    } else if (gameState === GAME.SHOP) {
-        updateShop(delta, input);
-    }
-    const settings = getSettingsState();
-    settings.sensitivity = clamp(Math.round(((Number(settings.sensitivity) || 1.0) + delta) * 20) / 20, 0.6, 1.6);
-    saveSettings();
-}
-
 function setSensitivityFromSliderX(x) {
     const left = W / 2 - 180;
     const right = W / 2 + 180;
@@ -1474,6 +1927,30 @@ function drawText(text, x, y, size = 48, color = "#ffffff", align = "center") {
     ctx.textAlign = align;
     ctx.textBaseline = "middle";
     ctx.fillText(text, x, y);
+    ctx.restore();
+}
+
+function drawWrappedText(text, x, y, maxWidth, size = 18, color = "#ffffff", lineHeight = 24) {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = `${size}px "Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    let line = "";
+    let lineY = y;
+    Array.from(String(text)).forEach((char) => {
+        const testLine = line + char;
+        if (ctx.measureText(testLine).width > maxWidth && line) {
+            ctx.fillText(line, x, lineY);
+            line = char;
+            lineY += lineHeight;
+        } else {
+            line = testLine;
+        }
+    });
+    if (line) {
+        ctx.fillText(line, x, lineY);
+    }
     ctx.restore();
 }
 
@@ -1655,11 +2132,13 @@ function drawTimeStopHud() {
         drawText(`TIME STOP ${(timeStopTimer / 1000).toFixed(1)}s`, W / 2, H - 44, 34, "#bff5ff");
         ctx.restore();
     } else if (timeStopCooldown > 0) {
-        drawText(`张开手掌冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+        drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+    } else if (!isTimeStopItemCarried()) {
+        drawText("赛前携带时停道具后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.50)");
     } else if (!window.cameraReady) {
-        drawText("摄像头连接后可五指张开时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
+        drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
     } else {
-        drawText("五指张开时停就绪", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
+        drawText("响指使用时停道具", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
     }
 
     if (timeStopMessageTimer > 0) {
@@ -1667,7 +2146,7 @@ function drawTimeStopHud() {
         ctx.globalAlpha = clamp(timeStopMessageTimer / 260, 0, 1);
         ctx.shadowColor = "#9de7ff";
         ctx.shadowBlur = 34;
-        drawText("OPEN PALM FREEZE", W / 2, 236, 48, "#bff5ff");
+        drawText("SNAP TIME STOP", W / 2, 236, 48, "#bff5ff");
         ctx.restore();
     }
 }
@@ -1733,6 +2212,111 @@ function drawTrail() {
     }
     ctx.restore();
 }
+
+function drawAdaptiveCalibrationOverlay(input) {
+    const progress = 1 - adaptiveSession.calibrationRemaining / ADAPTIVE_CALIBRATION_MS;
+    const panelX = W / 2 - 285;
+    const panelY = 170;
+    const panelW = 570;
+    const panelH = 220;
+    drawRoundedRect(panelX, panelY, panelW, panelH, 24, "rgba(5, 12, 22, 0.68)", "rgba(126,247,197,0.35)");
+    drawText("自适应校准", W / 2, panelY + 44, 42, "#7ef7c5");
+    drawText("自然挥动手部，系统正在学习你的舒适范围", W / 2, panelY + 88, 22, "rgba(255,255,255,0.78)");
+    drawText(input.hand ? "摄像头轨迹采集中" : "鼠标轨迹采集中", W / 2, panelY + 120, 18, "rgba(255,255,255,0.56)");
+
+    const barX = panelX + 82;
+    const barY = panelY + 158;
+    const barW = panelW - 164;
+    const barH = 10;
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.16)";
+    ctx.fillRect(barX, barY, barW, barH);
+    const gradient = ctx.createLinearGradient(barX, barY, barX + barW, barY);
+    gradient.addColorStop(0, "#7ef7c5");
+    gradient.addColorStop(1, "#ffd166");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(barX, barY, barW * clamp(progress, 0, 1), barH);
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(126,247,197,0.42)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(input.x, input.y, 26 + Math.sin(performance.now() / 160) * 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawAdaptiveHeatmap(report, x, y, width, height) {
+    const cellW = width / ADAPTIVE_GRID_COLS;
+    const cellH = height / ADAPTIVE_GRID_ROWS;
+    const maxVisit = Math.max(1, ...report.grid.flat().map((cell) => cell.visitMs));
+
+    drawRoundedRect(x - 12, y - 34, width + 24, height + 56, 18, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
+    drawText("轨迹热力图 / 区域命中率", x, y - 16, 18, "rgba(255,255,255,0.78)", "left");
+
+    report.grid.forEach((row, rowIndex) => row.forEach((cell, colIndex) => {
+        const left = x + colIndex * cellW;
+        const top = y + rowIndex * cellH;
+        const heat = clamp(cell.visitMs / maxVisit, 0, 1);
+        const attempts = cell.hits + cell.misses;
+        const hitRate = attempts ? Math.round((cell.hits / attempts) * 100) : null;
+        const hardest = report.hardestRow === rowIndex && report.hardestCol === colIndex;
+
+        ctx.save();
+        ctx.fillStyle = hardest ? "rgba(255, 184, 77, 0.30)" : `rgba(126, 247, 197, ${0.07 + heat * 0.34})`;
+        ctx.fillRect(left, top, cellW, cellH);
+        ctx.strokeStyle = hardest ? "rgba(255,184,77,0.90)" : "rgba(255,255,255,0.16)";
+        ctx.lineWidth = hardest ? 3 : 1;
+        ctx.strokeRect(left, top, cellW, cellH);
+        ctx.restore();
+
+        if (hitRate !== null) {
+            drawText(`${hitRate}%`, left + cellW / 2, top + cellH / 2, 18, cell.misses > cell.hits ? "#ffd166" : "#ffffff");
+        }
+    }));
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,209,102,0.55)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+        x + (report.comfortRect.x / W) * width,
+        y + (report.comfortRect.y / H) * height,
+        (report.comfortRect.width / W) * width,
+        (report.comfortRect.height / H) * height
+    );
+    ctx.fillStyle = "rgba(255,209,102,0.7)";
+    report.missPoints.forEach((point) => {
+        ctx.beginPath();
+        ctx.arc(x + (point.x / W) * width, y + (point.y / H) * height, 3, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.fillStyle = "rgba(126,247,197,0.74)";
+    report.hitPoints.slice(-70).forEach((point) => {
+        ctx.beginPath();
+        ctx.arc(x + (point.x / W) * width, y + (point.y / H) * height, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.restore();
+}
+
+function drawAdaptiveReport(report) {
+    drawText("灵敏度学习报告", W / 2, 186, 28, "#7ef7c5");
+    drawAdaptiveHeatmap(report, 112, 232, 250, 166);
+
+    const left = 414;
+    const top = 218;
+    const lineGap = 30;
+    drawRoundedRect(left - 24, top - 24, 406, 270, 18, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
+    drawText(`本局固定灵敏度：x${report.currentScale.toFixed(2)}`, left, top, 21, "#ffffff", "left");
+    drawText(`下局建议灵敏度：x${report.nextScale.toFixed(2)}`, left, top + lineGap, 21, "#7ef7c5", "left");
+    drawText(`交互分：${report.roundScore}   ${report.comparison.label}`, left, top + lineGap * 2, 19, report.comparison.scoreDelta >= ADAPTIVE_SCORE_THRESHOLD ? "#7ef7c5" : report.comparison.scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD ? "#ffd166" : "#ffffff", "left");
+    drawText(report.previousRound ? report.comparison.detail : "暂无上一局对比", left, top + lineGap * 3, 17, "rgba(255,255,255,0.72)", "left");
+    drawText(`命中率 ${report.hitRate}%   覆盖 ${report.coveragePercent}%   疲劳 ${report.fatigueEnd}%`, left, top + lineGap * 4, 18, "#ffffff", "left");
+    drawText(`最难触达：${report.hardestLabel}   平均速度：${report.avgSpeed}px/s`, left, top + lineGap * 5, 18, "#ffd166", "left");
+    drawWrappedText(report.adjustmentReason, left, top + lineGap * 6 + 4, 350, 16, "rgba(255,255,255,0.78)", 22);
+}
+
 function checkSlicePerfect(center, radius, start, end) {
     const dx = end.x - start.x;
     const dy = end.y - start.y;
@@ -1748,17 +2332,18 @@ function checkSlicePerfect(center, radius, start, end) {
 }
 
 class Fruit {
-    constructor(mode) {
-        const pool = mode === MODES.zen
-            ? ["apple", "orange", "banana", "watermelon"]
-            : ["apple", "apple", "orange", "orange", "banana", "banana", "watermelon", "watermelon", "apple", "orange", "banana", "watermelon", "bomb"];
-
-        this.type = pool[Math.floor(Math.random() * pool.length)];
+    constructor(mode, options = {}) {
+        const fruitPool = ["apple", "orange", "banana", "watermelon"];
+        const bombChance = mode === MODES.zen ? 0 : (1 / 13) * (Number(options.bombRateFactor) || 1);
+        this.type = Math.random() < bombChance ? "bomb" : fruitPool[Math.floor(Math.random() * fruitPool.length)];
+        this.id = fruitIdSeed++;
         this.r = this.type === "bomb" ? 40 : 38;
-        this.x = Math.random() * (W - 300) + 150;
+        this.x = Number.isFinite(options.x) ? clamp(options.x, 110, W - 110) : Math.random() * (W - 300) + 150;
         this.y = H + 50;
-        this.vx = Math.random() * 6 - 3;
-        this.vy = -Math.random() * 5 - 13;
+        const speedScale = Number(options.speedScale) || 1;
+        const horizontalScale = Number(options.horizontalScale) || 1;
+        this.vx = (Math.random() * 6 - 3) * horizontalScale;
+        this.vy = (-Math.random() * 5 - 13) * speedScale;
         this.gravity = 0.30;
         this.rotation = Math.random() * Math.PI * 2;
         this.spin = Math.random() * 0.12 - 0.06;
@@ -2152,8 +2737,7 @@ function resetGame(mode) {
     window.gestureLockUntil = 0;
     resetComboStats();
     resetTimeStop();
-    fistLatched = false;
-    clearCooldownUntil = 0;
+    startAdaptiveSession();
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -2191,8 +2775,8 @@ function returnToMenu() {
     window.gestureLockUntil = 0;
     resetComboStats();
     resetTimeStop();
-    fistLatched = false;
-    clearCooldownUntil = 0;
+    adaptiveSession.phase = "idle";
+    window.adaptiveSensitivityScale = 1;
     resetDojoHold();
     if (ui.cameraStatus) {
         ui.cameraStatus.textContent = window.cameraReady ? "摄像头已连接" : "鼠标模式运行中";
@@ -2262,7 +2846,14 @@ function getInputPosition() {
 
     lastInputWasHand = cameraActive;
 
-    return { x: pointerX, y: pointerY, active, fist: Boolean(window.isFist && cameraActive), thumbUp: Boolean(window.isThumbsUp && cameraActive) };
+    return {
+        x: pointerX,
+        y: pointerY,
+        active,
+        hand: cameraActive,
+        fist: Boolean(window.isFist && cameraActive),
+        openHand: Boolean((window.isOpenHand || window.isOpenPalm) && cameraActive),
+    };
 }
 
 // 在一组交互 item 中选出距离指针最近且在阈值内的索引
@@ -2283,7 +2874,9 @@ function getHoveredIndex(items, px, py, radius) {
 function spawnFruit(step) {
     const chance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : 0.055;
     if (Math.random() < chance * step) {
-        fruits.push(new Fruit(chosenMode));
+        const fruit = new Fruit(chosenMode);
+        fruits.push(fruit);
+        recordAdaptiveSpawn(fruit);
     }
 }
 
@@ -2340,7 +2933,7 @@ function updateMenu(delta, input) {
 function updateSettings(delta, input) {
     drawText("Settings", W / 2, 90, 58, "#ffffff");
     drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, "rgba(255,255,255,0.78)");
-    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  滑条可用鼠标拖动或手指直接指向调节`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
+    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  自动调节：${getSettingsState().autoSensitivity === false ? "关" : "开"}`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
 
     const centerX = W / 2;
     const sliderLeft = centerX - 180;
@@ -2536,8 +3129,6 @@ function updateSettings(delta, input) {
 }
 
 function updatePlaying(delta, input) {
-    const now = performance.now();
-    const clearCooldownRemaining = Math.max(0, clearCooldownUntil - now);
     const exitLeft = 20;
     const exitTop = 18;
     const exitWidth = 120;
@@ -2561,6 +3152,18 @@ function updatePlaying(delta, input) {
 
     consumeSnapTrigger(input);
     updateTimeStopTimers(delta);
+    updateAdaptiveSession(delta, input);
+
+    trail.push({ x: input.x, y: input.y });
+    if (trail.length > 14) {
+        trail.shift();
+    }
+
+    if (adaptiveSession.enabled && adaptiveSession.phase === "calibrating") {
+        drawTrail();
+        drawAdaptiveCalibrationOverlay(input);
+        return;
+    }
 
     const timeStopped = timeStopTimer > 0;
     const simulationDelta = timeStopped ? delta * TIME_STOP_SLOW_FACTOR : delta;
@@ -2571,15 +3174,11 @@ function updatePlaying(delta, input) {
     if (!timeStopped && (chosenMode === MODES.zen || chosenMode === MODES.arcade)) {
         remainingTime -= delta / 1000;
         if (remainingTime <= 0) {
+            getAdaptiveReport();
             gameState = GAME.GAMEOVER;
             if (window.playGameOver) window.playGameOver();
             return;
         }
-    }
-
-    trail.push({ x: input.x, y: input.y });
-    if (trail.length > 14) {
-        trail.shift();
     }
 
     if (!timeStopped) {
@@ -2605,14 +3204,17 @@ function updatePlaying(delta, input) {
                 }
 
                 if (fruit.type === "bomb") {
+                    recordAdaptiveFruitResult(fruit, "bomb");
                     resetCombo();
                     if (chosenMode === MODES.classic) {
+                        getAdaptiveReport();
                         gameState = GAME.GAMEOVER;
                         if (window.playGameOver) window.playGameOver();
                     } else if (chosenMode === MODES.arcade) {
                         score = Math.max(0, score - 20);
                     }
                 } else {
+                    recordAdaptiveFruitResult(fruit, "hit");
                     score += registerComboHit(fruit.x, fruit.y);
                     money += 1;
                     saveShopData();
@@ -2636,11 +3238,13 @@ function updatePlaying(delta, input) {
         if (fruit.alive && fruit.y > H + 60 && fruit.vy > 0) {
             fruit.alive = false;
             if (fruit.type !== "bomb") {
+                recordAdaptiveFruitResult(fruit, "miss");
                 resetCombo();
                 if (chosenMode === MODES.classic) {
                     lives -= 1;
                     if (window.playMiss) window.playMiss();
                     if (lives <= 0) {
+                        getAdaptiveReport();
                         gameState = GAME.GAMEOVER;
                         if (window.playGameOver) window.playGameOver();
                     }
@@ -2674,10 +3278,7 @@ function updatePlaying(delta, input) {
 
     drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
     drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
-    drawText(`💣 清屏道具: ${clearItems}`, W / 2, 80, 20, "#ff6b6b", "center");
-    if (clearCooldownRemaining > 0) {
-        drawText(`清屏冷却 ${Math.ceil(clearCooldownRemaining / 1000)}s`, W / 2, 108, 18, "rgba(255,107,107,0.82)", "center");
-    }
+    drawCarriedItemHud(clearButtonHovered);
     drawComboHud();
     drawTimeStopHud();
     if (chosenMode === MODES.classic) {
@@ -2685,42 +3286,18 @@ function updatePlaying(delta, input) {
     } else {
         drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
     }
-    // 竖大拇指一键清屏逻辑
-    if (input.thumbUp) {
-        if (!fistLatched && clearItems > 0 && clearCooldownRemaining <= 0) {
-            fistLatched = true;
-            clearItems -= 1;
-            clearCooldownUntil = now + CLEAR_COOLDOWN_MS;
-            resetCombo();
-
-            // 播放爆炸音效
-            if (window.playBomb) window.playBomb();
-
-            // 销毁场上所有非炸弹水果
-            fruits.forEach(fruit => {
-                if (fruit.alive && fruit.type !== "bomb") {
-                    fruit.alive = false;
-                    score += 1;
-                    money += 1;
-                    // 此处你可自行决定是否调用 spawnParticles(fruit) 等特效
-                }
-            });
-            saveShopData();
-        }
-    } else {
-        // 解除手势后重置触发器
-        fistLatched = false; 
-    }
 }
 
 function updateGameover(delta, input) {
     const bestMultiplier = getComboMultiplierForCount(bestCombo);
     const bestComboColor = getComboColor(bestCombo);
+    const report = getAdaptiveReport();
 
-    drawRoundedRect(90, 105, W - 180, H - 210, 28, "rgba(3, 8, 16, 0.58)", "rgba(255,255,255,0.12)");
-    drawText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "TIME UP!" : "GAME OVER", W / 2, 170, 62, "#ff6b6b");
-    drawText(`Final Score: ${score}`, W / 2, 238, 38, "#ffffff");
-    drawText(`Best Combo: ${bestCombo}   Best x${bestMultiplier}`, W / 2, 288, 30, bestComboColor);
+    drawRoundedRect(54, 42, W - 108, H - 70, 28, "rgba(3, 8, 16, 0.62)", "rgba(255,255,255,0.12)");
+    drawText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "TIME UP!" : "GAME OVER", W / 2, 84, 48, "#ff6b6b");
+    drawText(`Final Score: ${score}`, W / 2 - 42, 136, 28, "#ffffff", "right");
+    drawText(`Best Combo: ${bestCombo}   Best x${bestMultiplier}`, W / 2 + 30, 136, 24, bestComboColor, "left");
+    drawAdaptiveReport(report);
 
     let trigger = null;
     const hoveredIndexG = getHoveredIndex(gameoverItems, input.x, input.y, 95);
@@ -2840,9 +3417,7 @@ canvas.addEventListener("pointerdown", (event) => {
                 syncBgmForScene();
             } 
             else if (selected.mode === "shop") { 
-                gameState = GAME.SHOP;
-                shopHold = [0, 0, 0, 0];
-                shopExitHold = 0;
+                enterShop();
             }else {
                 resetGame(selected.mode);
             }
@@ -2909,7 +3484,7 @@ window.addEventListener("load", () => {
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = readStoredValue("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+    let s = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
@@ -2917,6 +3492,7 @@ function loadSettings() {
     const musicVolumeValue = Number(s.musicVolume);
     const sfxVolumeValue = Number(s.sfxVolume);
     s.muted = !!s.muted;
+    s.autoSensitivity = s.autoSensitivity !== false;
     s.showCameraPreview = s.showCameraPreview !== false;
     s.sensitivity = Number.isFinite(sensitivityValue) ? clamp(sensitivityValue, 0.6, 1.6) : 1.0;
     s.musicVolume = Number.isFinite(musicVolumeValue) ? clamp(musicVolumeValue, 0, 1) : 0.45;

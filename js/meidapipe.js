@@ -1,8 +1,8 @@
 window.handX = 450;
 window.handY = 300;
 window.isFist = false;
-window.isThumbsUp = false;
 window.isOpenPalm = false;
+window.isOpenHand = false;
 window.handTracked = false;
 window.cameraReady = false;
 window.snapTriggered = false;
@@ -17,7 +17,7 @@ let snapCloseDistance = Infinity;
 let snapLastDistance = Infinity;
 let snapLastTime = 0;
 let snapCooldownUntil = 0;
-let openPalmLatched = false;
+const FIST_THRESHOLD = 0.13;
 
 // 本文件内部使用的 clamp，避免依赖外部脚本作用域
 function clamp(v, a, b) {
@@ -100,41 +100,16 @@ function analyzeOpenHand(landmarks) {
             landmarkDistance(landmarks[16], landmarks[20])) /
         3;
     const thumbSpread = landmarkDistance(landmarks[4], landmarks[8]);
+    const thumbMiddleSpread = landmarkDistance(landmarks[4], landmarks[12]);
 
     return {
         extendedCount,
-        isOpenHand: extendedCount === 5 && fingerSpread > palmScale * 0.22 && thumbSpread > palmScale * 0.35,
+        isOpenHand:
+            extendedCount === 5 &&
+            fingerSpread > palmScale * 0.22 &&
+            thumbSpread > palmScale * 0.35 &&
+            thumbMiddleSpread > palmScale * 0.52,
     };
-}
-
-function isFingerExtended(landmarks, tipId, pipId, margin = 0.02) {
-    return landmarks[tipId].y < landmarks[pipId].y - margin;
-}
-
-function detectThumbsUp(landmarks) {
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-    const thumbIp = landmarks[3];
-    const thumbRaised = thumbTip.y < wrist.y - 0.04 && thumbTip.y < thumbIp.y - 0.015;
-    const otherFingersCurled = !isFingerExtended(landmarks, 8, 6)
-        && !isFingerExtended(landmarks, 12, 10)
-        && !isFingerExtended(landmarks, 16, 14)
-        && !isFingerExtended(landmarks, 20, 18);
-
-    return thumbRaised && otherFingersCurled;
-}
-
-function detectOpenPalm(landmarks) {
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-    const thumbMcp = landmarks[2];
-    const thumbExtended = thumbTip.y < wrist.y - 0.03 || Math.abs(thumbTip.x - thumbMcp.x) > 0.08;
-
-    return thumbExtended
-        && isFingerExtended(landmarks, 8, 6)
-        && isFingerExtended(landmarks, 12, 10)
-        && isFingerExtended(landmarks, 16, 14)
-        && isFingerExtended(landmarks, 20, 18);
 }
 
 function getPalmScale(landmarks) {
@@ -149,26 +124,55 @@ function getPalmScale(landmarks) {
 
 function updateSnapState(landmarks, width, height, normCoord, openHandState) {
     const now = performance.now();
-    if (now < snapCooldownUntil) {
+    const thumbTip = landmarks[4];
+    const middleTip = landmarks[12];
+    const palmScale = getPalmScale(landmarks);
+    const distanceRatio = landmarkDistance(thumbTip, middleTip) / palmScale;
+    const stableOpenHand = Boolean(openHandState && openHandState.isOpenHand);
+    const snapBlocked =
+        now < snapCooldownUntil ||
+        now < (Number(window.gestureLockUntil) || 0);
+
+    if (snapBlocked || (stableOpenHand && !snapPrimed)) {
+        snapPrimed = false;
+        window.snapTriggered = false;
+        snapLastDistance = distanceRatio;
         snapLastTime = now;
         return;
     }
 
-    const openPalm = detectOpenPalm(landmarks);
-    if (openPalm) {
-        if (!openPalmLatched) {
-            const palmCenterX = (landmarks[0].x + landmarks[9].x) / 2;
-            const palmCenterY = (landmarks[0].y + landmarks[9].y) / 2;
-            window.snapTriggered = true;
-            window.snapX = (1 - normCoord(palmCenterX)) * width;
-            window.snapY = normCoord(palmCenterY) * height;
-            snapCooldownUntil = now + 1500;
-            openPalmLatched = true;
+    const closeThreshold = 0.46;
+    const openThreshold = 0.74;
+    const minSeparation = 0.30;
+    const minVelocity = 1.65;
+
+    if (distanceRatio < closeThreshold) {
+        if (!snapPrimed || distanceRatio < snapCloseDistance) {
+            snapPrimed = true;
+            snapPrimedAt = now;
+            snapCloseDistance = distanceRatio;
         }
-    } else {
-        openPalmLatched = false;
+    } else if (snapPrimed) {
+        const elapsed = now - snapPrimedAt;
+        const frameSeconds = Math.max(0.016, (now - snapLastTime) / 1000);
+        const velocity = (distanceRatio - snapLastDistance) / frameSeconds;
+        const separatedEnough = distanceRatio > openThreshold && distanceRatio - snapCloseDistance > minSeparation;
+        const timingLooksRight = elapsed >= 35 && elapsed <= 460;
+
+        if (separatedEnough && timingLooksRight && velocity > minVelocity) {
+            const snapMidX = (thumbTip.x + middleTip.x) / 2;
+            const snapMidY = (thumbTip.y + middleTip.y) / 2;
+            window.snapTriggered = true;
+            window.snapX = (1 - normCoord(snapMidX)) * width;
+            window.snapY = normCoord(snapMidY) * height;
+            snapCooldownUntil = now + 1500;
+            snapPrimed = false;
+        } else if (elapsed > 560 || distanceRatio > 1.28) {
+            snapPrimed = false;
+        }
     }
 
+    snapLastDistance = distanceRatio;
     snapLastTime = now;
 }
 
@@ -180,13 +184,13 @@ function updateHandState(results) {
         const landmarks = results.multiHandLandmarks[0];
         const indexTip = landmarks[8];
         const localIsFist = detectFist(landmarks);
-        const localIsThumbsUp = detectThumbsUp(landmarks);
-        const localIsOpenPalm = detectOpenPalm(landmarks);
+        const openHandState = analyzeOpenHand(landmarks);
 
         // 增强可达范围并根据设置调整灵敏度
         const margin = 0.05;
         const baseSensitivity = (window.settings && window.settings.sensitivity) ? Number(window.settings.sensitivity) : 1.0;
-        const sensitivity = baseSensitivity;
+        const adaptiveScale = Number(window.adaptiveSensitivityScale) || 1;
+        const sensitivity = clamp(baseSensitivity * adaptiveScale, 0.55, 1.85);
 
         function normCoord(v) {
             const n = (v - margin) / (1 - 2 * margin);
@@ -194,6 +198,7 @@ function updateHandState(results) {
         }
 
         updateSnapState(landmarks, width, height, normCoord, openHandState);
+        const localIsOpenHand = !localIsFist && !window.snapTriggered && !snapPrimed && openHandState.isOpenHand;
 
         const nx = normCoord(indexTip.x);
         const ny = normCoord(indexTip.y);
@@ -208,8 +213,8 @@ function updateHandState(results) {
         window.handX = window.handX * 0.45 + nextX * 0.55;
         window.handY = window.handY * 0.45 + nextY * 0.55;
         window.isFist = localIsFist;
-        window.isThumbsUp = localIsThumbsUp;
-        window.isOpenPalm = localIsOpenPalm;
+        window.isOpenPalm = localIsOpenHand;
+        window.isOpenHand = localIsOpenHand;
         window.handTracked = true;
         lostHandFrames = 0;
         // 简易尝试：如果 faceLandmarker 可用，会在 face 回调中更新 faceState
@@ -218,10 +223,10 @@ function updateHandState(results) {
         if (lostHandFrames > 6) {
             window.handTracked = false;
             window.isFist = false;
-            window.isThumbsUp = false;
             window.isOpenPalm = false;
+            window.isOpenHand = false;
             snapPrimed = false;
-            openPalmLatched = false;
+            window.snapTriggered = false;
         }
     }
 }
