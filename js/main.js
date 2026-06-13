@@ -2,12 +2,34 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const W = canvas.width;
 const H = canvas.height;
+const MAX_CANVAS_DPR = 2;
 
 window.GAME_WIDTH = W;
 window.GAME_HEIGHT = H;
 
+function syncCanvasResolution() {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+        return;
+    }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
+    const targetWidth = Math.max(1, Math.round(rect.width * dpr));
+    const targetHeight = Math.max(1, Math.round(rect.height * dpr));
+
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+    }
+
+    ctx.setTransform(targetWidth / W, 0, 0, targetHeight / H, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+}
+
 const ui = {
     cameraStatus: document.getElementById("cameraStatus"),
+    emotionStatus: document.getElementById("emotionStatus"),
 };
 
 const GAME = {
@@ -87,40 +109,81 @@ const EFFECT_LEVELS = {
 };
 
 const EFFECT_LEVEL_ORDER = ["low", "medium", "high"];
+const CANVAS_UI_FONT_STACK = '"Source Han Sans SC", "Noto Sans CJK SC", "思源黑体", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif';
+const CANVAS_DISPLAY_FONT_STACK = '"Source Han Serif SC", "Noto Serif CJK SC", "思源宋体", "Songti SC", "SimSun", serif';
+const UI_THEME = {
+    ink: "#22313a",
+    muted: "rgba(34,49,58,0.68)",
+    faint: "rgba(34,49,58,0.46)",
+    panel: "rgba(255,255,255,0.72)",
+    panelSoft: "rgba(255,255,255,0.54)",
+    panelHover: "rgba(255,255,255,0.88)",
+    stroke: "rgba(32,87,82,0.16)",
+    strokeStrong: "rgba(32,87,82,0.28)",
+    jade: "#168c72",
+    blue: "#2f80c2",
+    gold: "#b87913",
+    orange: "#d66d18",
+    violet: "#7f52ae",
+    danger: "#d34f46",
+};
+const EMOTION_STATES = ["calm", "focused", "happy", "surprised"];
+const EMOTION_COLORS = {
+    calm: UI_THEME.jade,
+    focused: UI_THEME.blue,
+    happy: UI_THEME.gold,
+    surprised: UI_THEME.violet,
+    unknown: UI_THEME.faint,
+    off: "rgba(34,49,58,0.38)",
+};
+const EMOTION_LABELS = {
+    calm: "平稳",
+    focused: "专注",
+    happy: "开心",
+    surprised: "惊讶",
+    unknown: "未检测",
+    off: "关闭",
+};
 
 // 将原本的 menuItems 替换为以下代码：
 const menuItems = [
-    { text: "经典模式", mode: MODES.classic, x: W / 2, y: 248, width: 300, height: 58, color: "#7ef7c5" },
-    { text: "禅意模式", mode: MODES.zen, x: W / 2, y: 318, width: 300, height: 58, color: "#6db8ff" },
-    { text: "街机模式", mode: MODES.arcade, x: W / 2, y: 388, width: 300, height: 58, color: "#dba4ff" },
-    { text: "道场", mode: "dojo", x: W / 2, y: 458, width: 300, height: 58, color: "#8be9fd" },
-    { text: "设置", mode: "settings", x: W / 2 - 120, y: 538, width: 210, height: 52, color: "#ffd166" },
-    { text: "商店", mode: "shop", x: W / 2 + 135, y: 538, width: 190, height: 52, color: "#ff9f1c" },
+    { text: "经典模式", mode: MODES.classic, x: W / 2 - 195, y: 278, width: 340, height: 74, color: UI_THEME.jade, detail: "三次失误前尽量连击" },
+    { text: "禅意模式", mode: MODES.zen, x: W / 2 + 195, y: 278, width: 340, height: 74, color: UI_THEME.blue, detail: "90 秒放松练习" },
+    { text: "街机模式", mode: MODES.arcade, x: W / 2 - 195, y: 370, width: 340, height: 74, color: UI_THEME.violet, detail: "60 秒高密度挑战" },
+    { text: "道场", mode: "dojo", x: W / 2 + 195, y: 370, width: 340, height: 74, color: "#278fa0", detail: "背景与特效预览" },
+    { text: "设置", mode: "settings", x: W / 2 - 128, y: 522, width: 226, height: 48, color: UI_THEME.gold },
+    { text: "商店", mode: "shop", x: W / 2 + 138, y: 522, width: 206, height: 48, color: UI_THEME.orange },
 ];
 
 const settingsItems = [
-    { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 220, color: "#7ef7c5" },
-    { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 320, color: "#6db8ff" },
-    { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 420, color: "#ffd166" },
-    { action: "cycleEffects", text: () => `特效强度：${getEffectConfig().label}`, x: W / 2, y: 500, color: "#ff9f1c" },
-    { action: "back", text: () => "返回菜单", x: W / 2, y: 550, color: "#dba4ff" },
+    { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 220, color: UI_THEME.jade },
+    { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 320, color: UI_THEME.blue },
+    { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 420, color: UI_THEME.gold },
+    { action: "cycleEffects", text: () => `特效强度：${getEffectConfig().label}`, x: W / 2, y: 500, color: UI_THEME.orange },
+    { action: "toggleEmotion", text: () => `表情识别：${window.settings && window.settings.faceDetection === false ? "关" : "开"}`, x: W / 2, y: 500, color: "#278fa0" },
+    { action: "back", text: () => "返回菜单", x: W / 2, y: 550, color: UI_THEME.violet },
 ];
 
 const settingsSliderRows = [
-    { target: "sensitivity", label: "灵敏度", y: 240 },
-    { target: "music", label: "音乐音量", y: 330 },
-    { target: "sfx", label: "音效音量", y: 420 },
+    { target: "sensitivity", label: "灵敏度", y: 228 },
+    { target: "music", label: "音乐音量", y: 308 },
+    { target: "sfx", label: "音效音量", y: 388 },
 ];
 
 const gameoverItems = [
-    { text: "重新开始", action: "restart", x: W / 2 - 150, y: 548, color: "#7ef7c5" },
-    { text: "返回菜单", action: "menu", x: W / 2 + 150, y: 548, color: "#ffd166" },
+    { text: "重新开始", action: "restart", x: W / 2 - 118, y: 538, color: UI_THEME.jade },
+    { text: "返回菜单", action: "menu", x: W / 2 + 118, y: 538, color: UI_THEME.gold },
+];
+
+const gameoverReportTabs = [
+    { text: "交互报告", page: "adaptive", x: W / 2 - 88, y: 162, width: 150, height: 34, color: UI_THEME.jade },
+    { text: "表情报告", page: "emotion", x: W / 2 + 88, y: 162, width: 150, height: 34, color: UI_THEME.blue },
 ];
 
 const loadoutOptions = [
-    { item: CARRY_ITEM.NONE, label: () => "不携带", x: W / 2 - 210, y: 178, width: 136, color: "#7ef7c5" },
-    { item: CARRY_ITEM.CLEAR, label: () => `清屏 x${clearItems}`, x: W / 2, y: 178, width: 154, color: "#ff6b6b" },
-    { item: CARRY_ITEM.TIME_STOP, label: () => `时停 x${timeStopItems}`, x: W / 2 + 210, y: 178, width: 154, color: "#9de7ff" },
+    { item: CARRY_ITEM.NONE, label: () => "不携带", x: W / 2 - 235, y: 188, width: 148, color: UI_THEME.jade },
+    { item: CARRY_ITEM.CLEAR, label: () => `清屏 x${clearItems}`, x: W / 2, y: 188, width: 166, color: UI_THEME.danger },
+    { item: CARRY_ITEM.TIME_STOP, label: () => `时停 x${timeStopItems}`, x: W / 2 + 235, y: 188, width: 166, color: UI_THEME.blue },
 ];
 
 let gameState = GAME.MENU;
@@ -143,6 +206,8 @@ let trail = [];
 let menuHold = menuItems.map(() => 0);
 let loadoutHold = loadoutOptions.map(() => 0);
 let gameoverHold = [0, 0];
+let gameoverTabHold = gameoverReportTabs.map(() => 0);
+let gameoverReportPage = "adaptive";
 let playExitHold = 0;
 let clearItemHold = 0;
 let openHandClearHold = 0;
@@ -176,7 +241,7 @@ let shopExitHold = 0;
 let shopMessage = "";        // 商店提示信息文本
 let shopMessageTimer = 0;
 let comboEdgePulse = 0;
-let comboEdgeColor = "#7ef7c5";
+let comboEdgeColor = UI_THEME.jade;
 let timeStopTimer = 0;
 let timeStopCooldown = 0;
 let timeStopFlash = 0;
@@ -187,20 +252,21 @@ let timeStopBgmDucked = false;
 let fruitIdSeed = 1;
 let adaptiveProfile = loadAdaptiveProfile();
 let adaptiveSession = createAdaptiveSession();
+let emotionSession = createEmotionSession();
 window.adaptiveSensitivityScale = 1;
 
 const shopItems = [
-    { type: "item", item: CARRY_ITEM.CLEAR, text: "清屏道具", detail: "¥20", cost: 20, x: W / 2 - 220, y: 230, width: 230, height: 76, color: "#ff6b6b" },
-    { type: "item", item: CARRY_ITEM.TIME_STOP, text: "时停道具", detail: "¥30", cost: 30, x: W / 2 + 220, y: 230, width: 230, height: 76, color: "#9de7ff" },
+    { type: "item", item: CARRY_ITEM.CLEAR, text: "清屏道具", detail: "¥20", cost: 20, x: W / 2 - 220, y: 230, width: 230, height: 76, color: UI_THEME.danger },
+    { type: "item", item: CARRY_ITEM.TIME_STOP, text: "时停道具", detail: "¥30", cost: 30, x: W / 2 + 220, y: 230, width: 230, height: 76, color: UI_THEME.blue },
     { type: "color", text: "红色刀刃", detail: "¥50", cost: 50, value: "#ff4b4b", x: W / 2 - 220, y: 342, width: 230, height: 76, color: "#ff4b4b" },
-    { type: "color", text: "金色刀刃", detail: "¥50", cost: 50, value: "#ffd166", x: W / 2 + 220, y: 342, width: 230, height: 76, color: "#ffd166" },
-    { type: "color", text: "绿色刀刃", detail: "¥50", cost: 50, value: "#7ef7c5", x: W / 2, y: 450, width: 230, height: 76, color: "#7ef7c5" },
+    { type: "color", text: "金色刀刃", detail: "¥50", cost: 50, value: "#ffd166", x: W / 2 + 220, y: 342, width: 230, height: 76, color: UI_THEME.gold },
+    { type: "color", text: "绿色刀刃", detail: "¥50", cost: 50, value: "#7ef7c5", x: W / 2, y: 450, width: 230, height: 76, color: UI_THEME.jade },
 ];
 
 const DOJO_BACKGROUND_LIBRARY = [
-    { id: "bg-1", label: "bg1", src: "assets/images/bg1.jpg", accent: "#7ef7c5", note: "bg1.jpg" },
-    { id: "bg-2", label: "bg2", src: "assets/images/bg2.jpg", accent: "#6db8ff", note: "bg2.jpg" },
-    { id: "bg-3", label: "bg3", src: "assets/images/bg3.jpg", accent: "#ff9f1c", note: "bg3.jpg" },
+    { id: "bg-1", label: "bg1", src: "assets/images/bg1.jpg", accent: UI_THEME.jade, note: "bg1.jpg" },
+    { id: "bg-2", label: "bg2", src: "assets/images/bg2.jpg", accent: UI_THEME.blue, note: "bg2.jpg" },
+    { id: "bg-3", label: "bg3", src: "assets/images/bg3.jpg", accent: UI_THEME.orange, note: "bg3.jpg" },
 ];
 
 const DOJO_EFFECT_LIBRARY = [
@@ -228,8 +294,8 @@ let dojoHold = {
 const dojoImageCache = new Map();
 
 function updateShop(delta, input) {
-    drawText("商 店", W / 2, 88, 58, "#ffffff");
-    drawText(`💰 当前金币: ${money}   |   💣 清屏: ${clearItems}   |   ⏱ 时停: ${timeStopItems}`, W / 2, 150, 24, "#ffd166");
+    drawDisplayText("商 店", W / 2, 88, 58, UI_THEME.ink);
+    drawText(`当前金币 ${money}   清屏 ${clearItems}   时停 ${timeStopItems}`, W / 2, 150, 24, UI_THEME.gold);
     
     // 返回按钮
     const exitLeft = W / 2 - 60, exitTop = H - 78, exitWidth = 120, exitHeight = 46;
@@ -237,9 +303,9 @@ function updateShop(delta, input) {
     if (exitHovered) shopExitHold = Math.min(REQUIRED_HOLD_MS, shopExitHold + delta);
     else shopExitHold = Math.max(0, shopExitHold - delta * 2);
     
-    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", exitHovered ? "#ffb84d" : "rgba(255,255,255,0.12)");
-    drawText("返回", exitLeft + exitWidth / 2, exitTop + exitHeight / 2, 24, exitHovered ? "#ffb84d" : "#ffffff");
-    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, shopExitHold / REQUIRED_HOLD_MS, "#ffb84d");
+    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? UI_THEME.panelHover : UI_THEME.panel, exitHovered ? UI_THEME.gold : UI_THEME.stroke);
+    drawText("返回", exitLeft + exitWidth / 2, exitTop + exitHeight / 2, 24, exitHovered ? UI_THEME.gold : UI_THEME.ink);
+    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, shopExitHold / REQUIRED_HOLD_MS, UI_THEME.gold);
     
     if (shopExitHold >= REQUIRED_HOLD_MS) {
         returnToMenu(); // 返回菜单
@@ -274,10 +340,10 @@ function updateShop(delta, input) {
         }
         
         const canAfford = money >= item.cost;
-        const color = (!isBought && !canAfford) ? "rgba(255,255,255,0.36)" : item.color; // 买不起显示为灰色
+        const color = (!isBought && !canAfford) ? "rgba(34,49,58,0.36)" : item.color; // 买不起显示为灰色
         const bounds = getButtonBounds(item);
-        const fill = hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.065)";
-        const stroke = hovered ? color : "rgba(255,255,255,0.14)";
+        const fill = hovered ? UI_THEME.panelHover : UI_THEME.panel;
+        const stroke = hovered ? color : UI_THEME.stroke;
 
         drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 18, fill, stroke);
 
@@ -287,14 +353,14 @@ function updateShop(delta, input) {
             ctx.beginPath();
             ctx.arc(bounds.x + 26, item.y - 9, 9, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = "rgba(255,255,255,0.45)";
+            ctx.strokeStyle = "rgba(34,49,58,0.34)";
             ctx.lineWidth = 2;
             ctx.stroke();
             ctx.restore();
         }
 
         drawText(displayStr, item.x, item.y - 12, 22, color);
-        drawText(detailStr, item.x, item.y + 16, 16, isBought || canAfford ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,0.34)");
+        drawText(detailStr, item.x, item.y + 16, 16, isBought || canAfford ? UI_THEME.muted : "rgba(34,49,58,0.34)");
         drawLoadingArc(bounds.x + bounds.width - 26, item.y, 14, shopHold[index] / REQUIRED_HOLD_MS, color);
         
         // 判定长按购买/装备成功
@@ -530,15 +596,16 @@ function drawDojoPreviewFrame(frameX, frameY, frameWidth, frameHeight, backgroun
     drawRoundedRect(drawX + 20, drawY + 20, 160, 36, 16, "rgba(3,8,16,0.72)", backgroundItem.accent);
     drawText(backgroundItem.label, drawX + 100, drawY + 38, 20, backgroundItem.accent);
 
-    drawRoundedRect(drawX + scaledWidth - 170, drawY + 20, 150, 36, 16, "rgba(3,8,16,0.72)", effectItem.id === "none" ? "#7ef7c5" : "#8be9fd");
-    drawText(`特效：${effectItem.label}`, drawX + scaledWidth - 95, drawY + 38, 18, effectItem.id === "none" ? "#7ef7c5" : "#8be9fd");
+    const effectAccent = effectItem.id === "none" ? UI_THEME.jade : UI_THEME.blue;
+    drawRoundedRect(drawX + scaledWidth - 170, drawY + 20, 150, 36, 16, "rgba(34,49,58,0.72)", effectAccent);
+    drawText(`特效：${effectItem.label}`, drawX + scaledWidth - 95, drawY + 38, 18, effectAccent);
 
     const note = backgroundItem.src ? backgroundItem.note : backgroundItem.note;
     drawText(note, drawX + scaledWidth / 2, drawY + scaledHeight - 28, 18, "rgba(255,255,255,0.70)");
 }
 
 function updateDojo(delta, input) {
-    drawText("道 场", W / 2, 72, 60, "#5b3f23");
+    drawDisplayText("道 场", W / 2, 72, 60, "#5b3f23");
     drawText("左/右区域停留一秒切换预览，中间攥拳一秒确认", W / 2, 118, 22, "rgba(91,63,35,0.72)");
 
     const frameX = 110;
@@ -608,17 +675,17 @@ function updateDojo(delta, input) {
 
     drawDojoPreviewFrame(frameX, frameY, frameWidth, frameHeight, backgroundItem, effectItem, true);
 
-    drawRoundedRect(leftZone.x, leftZone.y, leftZone.w, leftZone.h, 24, inLeft ? "rgba(126, 247, 197, 0.18)" : "rgba(255,255,255,0.05)", "rgba(126, 247, 197, 0.18)");
-    drawRoundedRect(rightZone.x, rightZone.y, rightZone.w, rightZone.h, 24, inRight ? "rgba(219, 164, 255, 0.18)" : "rgba(255,255,255,0.05)", "rgba(219, 164, 255, 0.18)");
+    drawRoundedRect(leftZone.x, leftZone.y, leftZone.w, leftZone.h, 24, inLeft ? "rgba(22, 140, 114, 0.16)" : UI_THEME.panelSoft, "rgba(22, 140, 114, 0.18)");
+    drawRoundedRect(rightZone.x, rightZone.y, rightZone.w, rightZone.h, 24, inRight ? "rgba(127, 82, 174, 0.16)" : UI_THEME.panelSoft, "rgba(127, 82, 174, 0.18)");
 
-    drawText("上一张", leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h / 2 - 10, 24, inLeft ? "#7ef7c5" : "rgba(255,255,255,0.75)");
-    drawText("下一张", rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h / 2 - 10, 24, inRight ? "#dba4ff" : "rgba(255,255,255,0.75)");
-    drawLoadingArc(leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h - 10, 16, dojoHold.left / REQUIRED_HOLD_MS, "#7ef7c5");
-    drawLoadingArc(rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h - 10, 16, dojoHold.right / REQUIRED_HOLD_MS, "#dba4ff");
+    drawText("上一张", leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h / 2 - 10, 24, inLeft ? UI_THEME.jade : UI_THEME.muted);
+    drawText("下一张", rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h / 2 - 10, 24, inRight ? UI_THEME.violet : UI_THEME.muted);
+    drawLoadingArc(leftZone.x + leftZone.w / 2, leftZone.y + leftZone.h - 10, 16, dojoHold.left / REQUIRED_HOLD_MS, UI_THEME.jade);
+    drawLoadingArc(rightZone.x + rightZone.w / 2, rightZone.y + rightZone.h - 10, 16, dojoHold.right / REQUIRED_HOLD_MS, UI_THEME.violet);
 
-    drawRoundedRect(centerZone.x, centerZone.y, centerZone.w, centerZone.h, 24, inCenter ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)", "rgba(255,255,255,0.10)");
-    drawText("攥拳 1 秒选中", centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h / 2 - 4, 24, inCenter ? "#8be9fd" : "rgba(255,255,255,0.68)");
-    drawLoadingArc(centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h - 20, 38, dojoHold.center / REQUIRED_HOLD_MS, "#8be9fd");
+    drawRoundedRect(centerZone.x, centerZone.y, centerZone.w, centerZone.h, 24, inCenter ? UI_THEME.panelHover : UI_THEME.panelSoft, UI_THEME.stroke);
+    drawText("攥拳 1 秒选中", centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h / 2 - 4, 24, inCenter ? UI_THEME.blue : UI_THEME.muted);
+    drawLoadingArc(centerZone.x + centerZone.w / 2, centerZone.y + centerZone.h - 20, 38, dojoHold.center / REQUIRED_HOLD_MS, UI_THEME.blue);
 
     if (dojoHold.left >= REQUIRED_HOLD_MS) {
         moveDojoPreview(-1);
@@ -742,7 +809,7 @@ function getShopItemIndexAt(x, y) {
 
 function updateLoadoutSelector(delta, input) {
     normalizeCarriedItem();
-    drawText("本局携带", W / 2, 158, 18, "rgba(255,255,255,0.58)");
+    drawText("本局携带", W / 2, 154, 17, UI_THEME.faint);
 
     const hoveredIndex = getLoadoutIndexAt(input.x, input.y);
     loadoutOptions.forEach((option, index) => {
@@ -756,9 +823,9 @@ function updateLoadoutSelector(delta, input) {
         }
 
         const bounds = getLoadoutBounds(option);
-        const color = enabled ? option.color : "rgba(255,255,255,0.34)";
-        const fill = selected ? "rgba(255,255,255,0.16)" : hovered && enabled ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)";
-        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, fill, selected ? option.color : "rgba(255,255,255,0.12)");
+        const color = enabled ? option.color : "rgba(34,49,58,0.34)";
+        const fill = selected ? UI_THEME.panelHover : hovered && enabled ? UI_THEME.panel : UI_THEME.panelSoft;
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, fill, selected ? option.color : UI_THEME.stroke);
         drawText(option.label(), bounds.x + 18, option.y - 1, 18, color, "left");
         drawLoadingArc(bounds.x + bounds.width - 20, option.y, 12, loadoutHold[index] / REQUIRED_HOLD_MS, option.color);
 
@@ -835,7 +902,7 @@ function triggerTimeStop(x, y) {
     timeStopX = clamp(x, 0, W);
     timeStopY = clamp(y, 0, H);
     comboEdgePulse = Math.max(comboEdgePulse, 0.7);
-    comboEdgeColor = "#9de7ff";
+    comboEdgeColor = UI_THEME.blue;
     setTimeStopBgmDucked(true);
     if (window.playSound) window.playSound(TIME_STOP_SOUND);
     lockOpenHandClear();
@@ -946,9 +1013,9 @@ function updateClearItemControl(delta, input) {
 function drawClearItemButton(hovered) {
     const bounds = getClearItemButtonBounds();
     const active = isClearItemCarried();
-    const color = active ? "#ff6b6b" : "rgba(255,255,255,0.38)";
+    const color = active ? UI_THEME.danger : "rgba(34,49,58,0.38)";
 
-    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, hovered && active ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.07)", hovered && active ? color : "rgba(255,255,255,0.12)");
+    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, hovered && active ? UI_THEME.panelHover : UI_THEME.panel, hovered && active ? color : UI_THEME.stroke);
     drawText(`清屏道具: ${clearItems}`, W / 2, bounds.y + bounds.height / 2 - 1, 20, color);
     drawLoadingArc(W / 2, bounds.y + bounds.height + 4, 16, clearItemHold / REQUIRED_HOLD_MS, color);
 }
@@ -956,9 +1023,9 @@ function drawClearItemButton(hovered) {
 function drawTimeStopItemButton() {
     const bounds = getClearItemButtonBounds();
     const active = isTimeStopItemCarried();
-    const color = active ? "#9de7ff" : "rgba(255,255,255,0.38)";
+    const color = active ? UI_THEME.blue : "rgba(34,49,58,0.38)";
     const detail = timeStopCooldown > 0 ? `冷却 ${Math.ceil(timeStopCooldown / 1000)}s` : active ? "响指触发" : "未携带";
-    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, "rgba(255,255,255,0.07)", active ? "rgba(157,231,255,0.55)" : "rgba(255,255,255,0.12)");
+    drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, UI_THEME.panel, active ? "rgba(47,128,194,0.36)" : UI_THEME.stroke);
     drawText(`时停道具: ${timeStopItems}`, W / 2, bounds.y + bounds.height / 2 - 8, 18, color);
     drawText(detail, W / 2, bounds.y + bounds.height / 2 + 11, 14, color);
 }
@@ -970,8 +1037,8 @@ function drawCarriedItemHud(clearHovered) {
         drawTimeStopItemButton();
     } else {
         const bounds = getClearItemButtonBounds();
-        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
-        drawText("未携带道具", W / 2, bounds.y + bounds.height / 2 - 1, 18, "rgba(255,255,255,0.46)");
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 16, UI_THEME.panelSoft, UI_THEME.stroke);
+        drawText("未携带道具", W / 2, bounds.y + bounds.height / 2 - 1, 18, UI_THEME.faint);
     }
 }
 
@@ -984,7 +1051,7 @@ function drawOpenHandClearIndicator(input) {
     const alpha = input.openHand ? 0.9 : 0.35;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = clearItems > 0 ? "#ffb84d" : "rgba(255,255,255,0.45)";
+    ctx.strokeStyle = clearItems > 0 ? UI_THEME.gold : "rgba(34,49,58,0.45)";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(input.x, input.y, 28, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
@@ -1130,12 +1197,12 @@ function getComboMultiplier() {
 
 function getComboColor(count = comboCount) {
     const multiplier = getComboMultiplierForCount(count);
-    if (multiplier >= 30) return "#ff3b6b";
-    if (multiplier >= 20) return "#ff7ab8";
-    if (multiplier >= 10) return "#ff9f1c";
-    if (multiplier >= 5) return "#ffd166";
-    if (multiplier >= 3) return "#dba4ff";
-    return "#7ef7c5";
+    if (multiplier >= 30) return "#c8365a";
+    if (multiplier >= 20) return "#c64c8c";
+    if (multiplier >= 10) return UI_THEME.orange;
+    if (multiplier >= 5) return UI_THEME.gold;
+    if (multiplier >= 3) return UI_THEME.violet;
+    return UI_THEME.jade;
 }
 
 function registerComboHit(x, y) {
@@ -1224,6 +1291,170 @@ function createAdaptiveSession() {
         noticeTimer: 0,
         notice: "",
     };
+}
+
+function createEmotionSession() {
+    return {
+        enabled: true,
+        elapsedMs: 0,
+        sampleMs: 0,
+        noDataMs: 0,
+        lastRecordAt: 0,
+        totals: EMOTION_STATES.reduce((acc, state) => {
+            acc[state] = 0;
+            return acc;
+        }, {}),
+        dominantCounts: EMOTION_STATES.reduce((acc, state) => {
+            acc[state] = 0;
+            return acc;
+        }, {}),
+        timeline: [],
+        report: null,
+    };
+}
+
+function getEmotionLabel(state) {
+    if (window.getFaceStateLabel) {
+        return window.getFaceStateLabel(state);
+    }
+    return EMOTION_LABELS[state] || EMOTION_LABELS.unknown;
+}
+
+function getEmotionSnapshot() {
+    if (window.getFaceStatusSnapshot) {
+        return window.getFaceStatusSnapshot();
+    }
+    return {
+        state: window.faceState || "unknown",
+        confidence: Number(window.faceConfidence) || 0,
+        enabled: getSettingsState().faceDetection !== false,
+        ready: Boolean(window.faceDetectionReady),
+        updatedAt: Number(window.faceSampleUpdatedAt) || 0,
+        mix: Object.assign({}, window.faceExpressionMix || {}),
+    };
+}
+
+function startEmotionSession() {
+    emotionSession = createEmotionSession();
+    emotionSession.enabled = getSettingsState().faceDetection !== false;
+}
+
+function getDominantEmotionFromMix(mix) {
+    return EMOTION_STATES.reduce((best, state) => {
+        const value = Number(mix && mix[state]) || 0;
+        return value > best.value ? { state, value } : best;
+    }, { state: "unknown", value: 0 });
+}
+
+function getTopEmotionMixEntries(mix, limit = 2) {
+    return EMOTION_STATES
+        .map((state) => ({ state, value: Number(mix && mix[state]) || 0 }))
+        .filter((entry) => entry.value >= 0.015)
+        .sort((a, b) => b.value - a.value)
+        .slice(0, limit);
+}
+
+function rememberEmotionTimeline(now, mix, state) {
+    if (now - emotionSession.lastRecordAt < 1000 && emotionSession.timeline.length > 0) {
+        return;
+    }
+    emotionSession.timeline.push({
+        t: emotionSession.elapsedMs,
+        state,
+        mix: Object.assign({}, mix),
+    });
+    if (emotionSession.timeline.length > 36) {
+        emotionSession.timeline.shift();
+    }
+    emotionSession.lastRecordAt = now;
+}
+
+function updateEmotionSession(delta) {
+    if (!emotionSession.enabled || gameState !== GAME.PLAYING) {
+        return;
+    }
+
+    emotionSession.elapsedMs += delta;
+    const snapshot = getEmotionSnapshot();
+    const now = performance.now();
+    const hasFreshFace =
+        snapshot.enabled !== false &&
+        snapshot.ready &&
+        snapshot.updatedAt &&
+        now - snapshot.updatedAt <= 1800;
+
+    if (!hasFreshFace) {
+        emotionSession.noDataMs += delta;
+        return;
+    }
+
+    const mix = normalizeEmotionMix(snapshot.mix);
+    const dominant = getDominantEmotionFromMix(mix);
+    if (dominant.state === "unknown" || dominant.value <= 0) {
+        emotionSession.noDataMs += delta;
+        return;
+    }
+
+    emotionSession.sampleMs += delta;
+    EMOTION_STATES.forEach((state) => {
+        emotionSession.totals[state] += (Number(mix[state]) || 0) * delta;
+    });
+    emotionSession.dominantCounts[dominant.state] += delta;
+    rememberEmotionTimeline(now, mix, dominant.state);
+}
+
+function normalizeEmotionMix(mix) {
+    let total = 0;
+    const clean = {};
+    EMOTION_STATES.forEach((state) => {
+        clean[state] = Math.max(0, Number(mix && mix[state]) || 0);
+        total += clean[state];
+    });
+    if (total <= 0) {
+        clean.calm = 1;
+        total = 1;
+    }
+    return EMOTION_STATES.reduce((acc, state) => {
+        acc[state] = clean[state] / total;
+        return acc;
+    }, {});
+}
+
+function getEmotionReport() {
+    if (emotionSession.report) return emotionSession.report;
+
+    const sampleMs = emotionSession.sampleMs;
+    const mix = {};
+    EMOTION_STATES.forEach((state) => {
+        mix[state] = sampleMs > 0 ? emotionSession.totals[state] / sampleMs : 0;
+    });
+    const dominant = getDominantEmotionFromMix(mix);
+    const topEntries = getTopEmotionMixEntries(mix, 3);
+    const validPercent = emotionSession.elapsedMs > 0
+        ? Math.round((sampleMs / emotionSession.elapsedMs) * 100)
+        : 0;
+    const sampleSeconds = Math.round(sampleMs / 1000);
+    const noDataSeconds = Math.round(emotionSession.noDataMs / 1000);
+    const summary = sampleMs > 0
+        ? `本局主要呈现 ${topEntries.map((entry) => `${getEmotionLabel(entry.state)} ${Math.round(entry.value * 100)}%`).join(" / ")}。`
+        : emotionSession.enabled
+            ? "本局没有足够的有效表情样本。"
+            : "本局表情识别已关闭。";
+
+    emotionSession.report = {
+        enabled: emotionSession.enabled,
+        sampleMs,
+        sampleSeconds,
+        noDataSeconds,
+        validPercent,
+        dominantState: dominant.state,
+        dominantPercent: Math.round((dominant.value || 0) * 100),
+        mix,
+        topEntries,
+        timeline: emotionSession.timeline.slice(),
+        summary,
+    };
+    return emotionSession.report;
 }
 
 function loadAdaptiveProfile() {
@@ -1639,9 +1870,10 @@ function getAdaptiveReport() {
 
 function getSettingsState() {
     if (!window.settings) {
-        window.settings = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+        window.settings = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, faceDetection: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     }
     window.settings.autoSensitivity = window.settings.autoSensitivity !== false;
+    window.settings.faceDetection = window.settings.faceDetection !== false;
     if (!EFFECT_LEVELS[window.settings.effectLevel]) {
         window.settings.effectLevel = "medium";
     }
@@ -1660,6 +1892,9 @@ function applySettingsState() {
     }
     if (window.setCameraPreviewVisible) {
         window.setCameraPreviewVisible(!!settings.showCameraPreview);
+    }
+    if (window.setFaceDetectionEnabled) {
+        window.setFaceDetectionEnabled(settings.faceDetection !== false);
     }
     if (window.setMusicVolume && typeof settings.musicVolume !== "undefined") {
         window.setMusicVolume(Number(settings.musicVolume));
@@ -1750,27 +1985,37 @@ function toggleDojoFocus() {
 
 function drawDefaultBackdrop() {
     const gradient = ctx.createLinearGradient(0, 0, W, H);
-    gradient.addColorStop(0, "#0d1629");
-    gradient.addColorStop(0.55, "#152841");
-    gradient.addColorStop(1, "#0f1320");
+    gradient.addColorStop(0, "#f8fbf8");
+    gradient.addColorStop(0.56, "#edf5f3");
+    gradient.addColorStop(1, "#f6faf4");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, W, H);
 
-    const blobs = [
-        { x: 120, y: 90, r: 140, color: "rgba(126, 247, 197, 0.10)" },
-        { x: 760, y: 110, r: 170, color: "rgba(255, 209, 102, 0.10)" },
-        { x: 680, y: 500, r: 180, color: "rgba(110, 144, 255, 0.12)" },
-    ];
+    const sideLight = ctx.createLinearGradient(0, 0, W, 0);
+    sideLight.addColorStop(0, "rgba(22, 140, 114, 0.08)");
+    sideLight.addColorStop(0.48, "rgba(255, 255, 255, 0)");
+    sideLight.addColorStop(1, "rgba(184, 121, 19, 0.07)");
+    ctx.fillStyle = sideLight;
+    ctx.fillRect(0, 0, W, H);
 
-    blobs.forEach((blob) => {
-        const glow = ctx.createRadialGradient(blob.x, blob.y, 0, blob.x, blob.y, blob.r);
-        glow.addColorStop(0, blob.color);
-        glow.addColorStop(1, "transparent");
-        ctx.fillStyle = glow;
+    ctx.save();
+    ctx.globalAlpha = 0.34;
+    ctx.strokeStyle = "rgba(34,49,58,0.08)";
+    ctx.lineWidth = 1;
+    for (let x = -H; x < W + H; x += 44) {
         ctx.beginPath();
-        ctx.arc(blob.x, blob.y, blob.r, 0, Math.PI * 2);
-        ctx.fill();
-    });
+        ctx.moveTo(x, H);
+        ctx.lineTo(x + H, 0);
+        ctx.stroke();
+    }
+    ctx.restore();
+
+    const shade = ctx.createLinearGradient(0, 0, 0, H);
+    shade.addColorStop(0, "rgba(255,255,255,0.50)");
+    shade.addColorStop(0.58, "rgba(255,255,255,0)");
+    shade.addColorStop(1, "rgba(32,87,82,0.09)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, W, H);
 }
 
 function drawGameBackdrop() {
@@ -1803,9 +2048,9 @@ function drawGameBackdrop() {
         ctx.restore();
 
         const veil = ctx.createLinearGradient(0, 0, 0, H);
-        veil.addColorStop(0, "rgba(11, 16, 26, 0.30)");
-        veil.addColorStop(0.48, "rgba(11, 16, 26, 0.16)");
-        veil.addColorStop(1, "rgba(11, 16, 26, 0.42)");
+        veil.addColorStop(0, "rgba(248, 251, 248, 0.38)");
+        veil.addColorStop(0.48, "rgba(248, 251, 248, 0.18)");
+        veil.addColorStop(1, "rgba(34, 49, 58, 0.18)");
         ctx.fillStyle = veil;
         ctx.fillRect(0, 0, W, H);
     }
@@ -1816,9 +2061,9 @@ function drawGameBackdrop() {
     }
 
     const ring = ctx.createLinearGradient(0, 0, W, H);
-    ring.addColorStop(0, "rgba(255,255,255,0.03)");
-    ring.addColorStop(0.5, "rgba(139,233,253,0.03)");
-    ring.addColorStop(1, "rgba(255,255,255,0.03)");
+    ring.addColorStop(0, "rgba(32,87,82,0.10)");
+    ring.addColorStop(0.5, "rgba(47,128,194,0.08)");
+    ring.addColorStop(1, "rgba(184,121,19,0.08)");
     ctx.strokeStyle = ring;
     ctx.lineWidth = 2;
     ctx.strokeRect(12, 12, W - 24, H - 24);
@@ -1920,20 +2165,24 @@ function cycleEffectLevel() {
     saveSettings();
 }
 
-function drawText(text, x, y, size = 48, color = "#ffffff", align = "center") {
+function drawText(text, x, y, size = 48, color = UI_THEME.ink, align = "center", fontStack = CANVAS_UI_FONT_STACK, weight = 500) {
     ctx.save();
     ctx.fillStyle = color;
-    ctx.font = `${size}px "Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.font = `${weight} ${size}px ${fontStack}`;
     ctx.textAlign = align;
     ctx.textBaseline = "middle";
     ctx.fillText(text, x, y);
     ctx.restore();
 }
 
-function drawWrappedText(text, x, y, maxWidth, size = 18, color = "#ffffff", lineHeight = 24) {
+function drawDisplayText(text, x, y, size = 48, color = UI_THEME.ink, align = "center") {
+    drawText(text, x, y, size, color, align, CANVAS_DISPLAY_FONT_STACK, 700);
+}
+
+function drawWrappedText(text, x, y, maxWidth, size = 18, color = UI_THEME.muted, lineHeight = 24, fontStack = CANVAS_UI_FONT_STACK) {
     ctx.save();
     ctx.fillStyle = color;
-    ctx.font = `${size}px "Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif`;
+    ctx.font = `400 ${size}px ${fontStack}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     let line = "";
@@ -1998,15 +2247,15 @@ function drawComboHud() {
         const top = 106;
         const progress = clamp(comboTimer / COMBO_WINDOW_MS, 0, 1);
 
-        drawRoundedRect(left, top, width, height, 18, "rgba(3, 8, 16, 0.48)", "rgba(255,255,255,0.12)");
+        drawRoundedRect(left, top, width, height, 18, UI_THEME.panel, UI_THEME.stroke);
         ctx.save();
         ctx.shadowColor = comboColor;
         ctx.shadowBlur = Math.min(28, (6 + multiplier * 2.4) * effectConfig.shadowScale);
-        drawText(`${comboCount} Combo  x${multiplier}`, W / 2, top + 18, 22, comboColor);
+        drawText(`${comboCount} 连击  x${multiplier}`, W / 2, top + 18, 22, comboColor);
         ctx.restore();
 
         ctx.save();
-        ctx.fillStyle = "rgba(255,255,255,0.14)";
+        ctx.fillStyle = "rgba(34,49,58,0.14)";
         ctx.fillRect(left + 22, top + 30, width - 44, 5);
         ctx.fillStyle = comboColor;
         ctx.fillRect(left + 22, top + 30, (width - 44) * progress, 5);
@@ -2129,16 +2378,16 @@ function drawTimeStopHud() {
         ctx.save();
         ctx.shadowColor = "#9de7ff";
         ctx.shadowBlur = 28;
-        drawText(`TIME STOP ${(timeStopTimer / 1000).toFixed(1)}s`, W / 2, H - 44, 34, "#bff5ff");
+        drawText(`时停 ${(timeStopTimer / 1000).toFixed(1)}s`, W / 2, H - 44, 34, UI_THEME.blue);
         ctx.restore();
     } else if (timeStopCooldown > 0) {
-        drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(191,245,255,0.76)");
+        drawText(`响指冷却 ${Math.ceil(timeStopCooldown / 1000)}s`, W / 2, H - 34, 20, "rgba(47,128,194,0.72)");
     } else if (!isTimeStopItemCarried()) {
-        drawText("赛前携带时停道具后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.50)");
+        drawText("赛前携带时停道具后可响指时停", W / 2, H - 34, 20, UI_THEME.faint);
     } else if (!window.cameraReady) {
-        drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, "rgba(191,245,255,0.54)");
+        drawText("摄像头连接后可响指时停", W / 2, H - 34, 20, UI_THEME.faint);
     } else {
-        drawText("响指使用时停道具", W / 2, H - 34, 20, "rgba(191,245,255,0.64)");
+        drawText("响指使用时停道具", W / 2, H - 34, 20, UI_THEME.muted);
     }
 
     if (timeStopMessageTimer > 0) {
@@ -2146,7 +2395,7 @@ function drawTimeStopHud() {
         ctx.globalAlpha = clamp(timeStopMessageTimer / 260, 0, 1);
         ctx.shadowColor = "#9de7ff";
         ctx.shadowBlur = 34;
-        drawText("SNAP TIME STOP", W / 2, 236, 48, "#bff5ff");
+        drawDisplayText("响指时停", W / 2, 236, 48, UI_THEME.blue);
         ctx.restore();
     }
 }
@@ -2162,28 +2411,7 @@ function drawBackground() {
         return;
     }
 
-    const gradient = ctx.createLinearGradient(0, 0, W, H);
-    gradient.addColorStop(0, "#0d1629");
-    gradient.addColorStop(0.55, "#152841");
-    gradient.addColorStop(1, "#0f1320");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, W, H);
-
-    const blobs = [
-        { x: 120, y: 90, r: 140, color: "rgba(126, 247, 197, 0.10)" },
-        { x: 760, y: 110, r: 170, color: "rgba(255, 209, 102, 0.10)" },
-        { x: 680, y: 500, r: 180, color: "rgba(110, 144, 255, 0.12)" },
-    ];
-
-    blobs.forEach((blob) => {
-        const glow = ctx.createRadialGradient(blob.x, blob.y, 0, blob.x, blob.y, blob.r);
-        glow.addColorStop(0, blob.color);
-        glow.addColorStop(1, "transparent");
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(blob.x, blob.y, blob.r, 0, Math.PI * 2);
-        ctx.fill();
-    });
+    drawDefaultBackdrop();
 }
 
 function hexToRgb(hex) {
@@ -2219,27 +2447,27 @@ function drawAdaptiveCalibrationOverlay(input) {
     const panelY = 170;
     const panelW = 570;
     const panelH = 220;
-    drawRoundedRect(panelX, panelY, panelW, panelH, 24, "rgba(5, 12, 22, 0.68)", "rgba(126,247,197,0.35)");
-    drawText("自适应校准", W / 2, panelY + 44, 42, "#7ef7c5");
-    drawText("自然挥动手部，系统正在学习你的舒适范围", W / 2, panelY + 88, 22, "rgba(255,255,255,0.78)");
-    drawText(input.hand ? "摄像头轨迹采集中" : "鼠标轨迹采集中", W / 2, panelY + 120, 18, "rgba(255,255,255,0.56)");
+    drawRoundedRect(panelX, panelY, panelW, panelH, 24, UI_THEME.panel, UI_THEME.strokeStrong);
+    drawDisplayText("自适应校准", W / 2, panelY + 44, 42, UI_THEME.jade);
+    drawText("自然挥动手部，系统正在学习你的舒适范围", W / 2, panelY + 88, 22, UI_THEME.muted);
+    drawText(input.hand ? "摄像头轨迹采集中" : "鼠标轨迹采集中", W / 2, panelY + 120, 18, UI_THEME.faint);
 
     const barX = panelX + 82;
     const barY = panelY + 158;
     const barW = panelW - 164;
     const barH = 10;
     ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.16)";
+    ctx.fillStyle = "rgba(34,49,58,0.12)";
     ctx.fillRect(barX, barY, barW, barH);
     const gradient = ctx.createLinearGradient(barX, barY, barX + barW, barY);
-    gradient.addColorStop(0, "#7ef7c5");
-    gradient.addColorStop(1, "#ffd166");
+    gradient.addColorStop(0, UI_THEME.jade);
+    gradient.addColorStop(1, UI_THEME.gold);
     ctx.fillStyle = gradient;
     ctx.fillRect(barX, barY, barW * clamp(progress, 0, 1), barH);
     ctx.restore();
 
     ctx.save();
-    ctx.strokeStyle = "rgba(126,247,197,0.42)";
+    ctx.strokeStyle = "rgba(22,140,114,0.42)";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(input.x, input.y, 26 + Math.sin(performance.now() / 160) * 4, 0, Math.PI * 2);
@@ -2252,8 +2480,8 @@ function drawAdaptiveHeatmap(report, x, y, width, height) {
     const cellH = height / ADAPTIVE_GRID_ROWS;
     const maxVisit = Math.max(1, ...report.grid.flat().map((cell) => cell.visitMs));
 
-    drawRoundedRect(x - 12, y - 34, width + 24, height + 56, 18, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
-    drawText("轨迹热力图 / 区域命中率", x, y - 16, 18, "rgba(255,255,255,0.78)", "left");
+    drawRoundedRect(x - 12, y - 34, width + 24, height + 56, 18, UI_THEME.panel, UI_THEME.stroke);
+    drawText("轨迹热力图 / 区域命中率", x, y - 16, 18, UI_THEME.muted, "left");
 
     report.grid.forEach((row, rowIndex) => row.forEach((cell, colIndex) => {
         const left = x + colIndex * cellW;
@@ -2264,20 +2492,20 @@ function drawAdaptiveHeatmap(report, x, y, width, height) {
         const hardest = report.hardestRow === rowIndex && report.hardestCol === colIndex;
 
         ctx.save();
-        ctx.fillStyle = hardest ? "rgba(255, 184, 77, 0.30)" : `rgba(126, 247, 197, ${0.07 + heat * 0.34})`;
+        ctx.fillStyle = hardest ? "rgba(184, 121, 19, 0.22)" : `rgba(22, 140, 114, ${0.08 + heat * 0.30})`;
         ctx.fillRect(left, top, cellW, cellH);
-        ctx.strokeStyle = hardest ? "rgba(255,184,77,0.90)" : "rgba(255,255,255,0.16)";
+        ctx.strokeStyle = hardest ? "rgba(184,121,19,0.78)" : "rgba(32,87,82,0.18)";
         ctx.lineWidth = hardest ? 3 : 1;
         ctx.strokeRect(left, top, cellW, cellH);
         ctx.restore();
 
         if (hitRate !== null) {
-            drawText(`${hitRate}%`, left + cellW / 2, top + cellH / 2, 18, cell.misses > cell.hits ? "#ffd166" : "#ffffff");
+            drawText(`${hitRate}%`, left + cellW / 2, top + cellH / 2, 18, cell.misses > cell.hits ? UI_THEME.gold : UI_THEME.ink);
         }
     }));
 
     ctx.save();
-    ctx.strokeStyle = "rgba(255,209,102,0.55)";
+    ctx.strokeStyle = "rgba(184,121,19,0.48)";
     ctx.lineWidth = 2;
     ctx.strokeRect(
         x + (report.comfortRect.x / W) * width,
@@ -2285,13 +2513,13 @@ function drawAdaptiveHeatmap(report, x, y, width, height) {
         (report.comfortRect.width / W) * width,
         (report.comfortRect.height / H) * height
     );
-    ctx.fillStyle = "rgba(255,209,102,0.7)";
+    ctx.fillStyle = "rgba(184,121,19,0.66)";
     report.missPoints.forEach((point) => {
         ctx.beginPath();
         ctx.arc(x + (point.x / W) * width, y + (point.y / H) * height, 3, 0, Math.PI * 2);
         ctx.fill();
     });
-    ctx.fillStyle = "rgba(126,247,197,0.74)";
+    ctx.fillStyle = "rgba(22,140,114,0.68)";
     report.hitPoints.slice(-70).forEach((point) => {
         ctx.beginPath();
         ctx.arc(x + (point.x / W) * width, y + (point.y / H) * height, 2.2, 0, Math.PI * 2);
@@ -2301,20 +2529,141 @@ function drawAdaptiveHeatmap(report, x, y, width, height) {
 }
 
 function drawAdaptiveReport(report) {
-    drawText("灵敏度学习报告", W / 2, 186, 28, "#7ef7c5");
-    drawAdaptiveHeatmap(report, 112, 232, 250, 166);
+    drawDisplayText("灵敏度学习报告", W / 2, 194, 24, UI_THEME.jade);
+    drawAdaptiveHeatmap(report, 66, 250, 312, 176);
 
-    const left = 414;
-    const top = 218;
-    const lineGap = 30;
-    drawRoundedRect(left - 24, top - 24, 406, 270, 18, "rgba(255,255,255,0.045)", "rgba(255,255,255,0.10)");
-    drawText(`本局固定灵敏度：x${report.currentScale.toFixed(2)}`, left, top, 21, "#ffffff", "left");
-    drawText(`下局建议灵敏度：x${report.nextScale.toFixed(2)}`, left, top + lineGap, 21, "#7ef7c5", "left");
-    drawText(`交互分：${report.roundScore}   ${report.comparison.label}`, left, top + lineGap * 2, 19, report.comparison.scoreDelta >= ADAPTIVE_SCORE_THRESHOLD ? "#7ef7c5" : report.comparison.scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD ? "#ffd166" : "#ffffff", "left");
-    drawText(report.previousRound ? report.comparison.detail : "暂无上一局对比", left, top + lineGap * 3, 17, "rgba(255,255,255,0.72)", "left");
-    drawText(`命中率 ${report.hitRate}%   覆盖 ${report.coveragePercent}%   疲劳 ${report.fatigueEnd}%`, left, top + lineGap * 4, 18, "#ffffff", "left");
-    drawText(`最难触达：${report.hardestLabel}   平均速度：${report.avgSpeed}px/s`, left, top + lineGap * 5, 18, "#ffd166", "left");
-    drawWrappedText(report.adjustmentReason, left, top + lineGap * 6 + 4, 350, 16, "rgba(255,255,255,0.78)", 22);
+    const left = 448;
+    const top = 242;
+    const lineGap = 24;
+    drawRoundedRect(left - 24, top - 20, 420, 226, 18, UI_THEME.panel, UI_THEME.stroke);
+    drawText(`本局固定灵敏度：x${report.currentScale.toFixed(2)}`, left, top, 20, UI_THEME.ink, "left");
+    drawText(`下局建议灵敏度：x${report.nextScale.toFixed(2)}`, left, top + lineGap, 20, UI_THEME.jade, "left");
+    drawText(`交互分：${report.roundScore}   ${report.comparison.label}`, left, top + lineGap * 2, 19, report.comparison.scoreDelta >= ADAPTIVE_SCORE_THRESHOLD ? UI_THEME.jade : report.comparison.scoreDelta <= -ADAPTIVE_SCORE_THRESHOLD ? UI_THEME.gold : UI_THEME.ink, "left");
+    drawText(report.previousRound ? report.comparison.detail : "暂无上一局对比", left, top + lineGap * 3, 17, UI_THEME.muted, "left");
+    drawText(`命中率 ${report.hitRate}%   覆盖 ${report.coveragePercent}%   疲劳 ${report.fatigueEnd}%`, left, top + lineGap * 4, 18, UI_THEME.ink, "left");
+    drawText(`最难触达：${report.hardestLabel}   平均速度：${report.avgSpeed}px/s`, left, top + lineGap * 5, 18, UI_THEME.gold, "left");
+    drawWrappedText(report.adjustmentReason, left, top + lineGap * 6 + 2, 360, 15, UI_THEME.muted, 20);
+}
+
+function getGameoverTabIndexAt(x, y) {
+    for (let i = 0; i < gameoverReportTabs.length; i += 1) {
+        if (pointInBounds(x, y, getButtonBounds(gameoverReportTabs[i]))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function drawGameoverReportTabs(delta, input) {
+    const hoveredIndex = getGameoverTabIndexAt(input.x, input.y);
+    let selectedPage = null;
+    gameoverReportTabs.forEach((tab, index) => {
+        const hovered = index === hoveredIndex;
+        const active = gameoverReportPage === tab.page;
+        if (hovered) {
+            gameoverTabHold[index] = Math.min(REQUIRED_HOLD_MS, gameoverTabHold[index] + delta);
+        } else {
+            gameoverTabHold[index] = Math.max(0, gameoverTabHold[index] - delta * 2);
+        }
+
+        const bounds = getButtonBounds(tab);
+        drawRoundedRect(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            16,
+            active ? UI_THEME.panelHover : hovered ? UI_THEME.panel : UI_THEME.panelSoft,
+            active || hovered ? tab.color : UI_THEME.stroke
+        );
+        drawText(tab.text, tab.x, tab.y - 1, 18, active || hovered ? tab.color : UI_THEME.muted);
+        drawLoadingArc(tab.x + tab.width / 2 - 20, tab.y, 10, gameoverTabHold[index] / REQUIRED_HOLD_MS, tab.color);
+
+        if (gameoverTabHold[index] >= REQUIRED_HOLD_MS) {
+            selectedPage = tab.page;
+        }
+    });
+    if (selectedPage) {
+        gameoverReportPage = selectedPage;
+        gameoverTabHold = gameoverReportTabs.map(() => 0);
+    }
+}
+
+function drawEmotionMixBars(report, x, y, width) {
+    const rowGap = 32;
+    EMOTION_STATES.forEach((state, index) => {
+        const rowY = y + index * rowGap;
+        const percent = Math.round((Number(report.mix[state]) || 0) * 100);
+        const barX = x + 86;
+        const barY = rowY - 8;
+        const barWidth = width - 154;
+
+        drawText(getEmotionLabel(state), x, rowY, 18, EMOTION_COLORS[state], "left");
+        drawRoundedRect(barX, barY, barWidth, 14, 7, "rgba(34,49,58,0.10)");
+        drawRoundedRect(barX, barY, Math.max(4, barWidth * percent / 100), 14, 7, EMOTION_COLORS[state]);
+        drawText(`${percent}%`, x + width, rowY, 18, percent > 0 ? UI_THEME.ink : UI_THEME.faint, "right");
+    });
+}
+
+function drawEmotionTimeline(report, x, y, width, height) {
+    drawRoundedRect(x, y, width, height, 16, UI_THEME.panel, UI_THEME.stroke);
+    drawText("采样时间线", x + 18, y + 18, 17, UI_THEME.muted, "left");
+    drawText("左早右晚", x + width - 18, y + 18, 14, UI_THEME.faint, "right");
+
+    if (!report.timeline.length) {
+        drawText("暂无足够样本", x + width / 2, y + height / 2 + 8, 18, UI_THEME.faint);
+        return;
+    }
+
+    const entries = report.timeline.slice(-18);
+    const gap = 3;
+    const barTop = y + 32;
+    const barHeight = Math.max(12, height - 40);
+    const barWidth = (width - 36 - gap * (entries.length - 1)) / entries.length;
+    entries.forEach((entry, index) => {
+        let cursorY = barTop + barHeight;
+        const left = x + 18 + index * (barWidth + gap);
+        EMOTION_STATES.forEach((state) => {
+            const segmentHeight = barHeight * (Number(entry.mix && entry.mix[state]) || 0);
+            cursorY -= segmentHeight;
+            ctx.save();
+            ctx.fillStyle = EMOTION_COLORS[state];
+            ctx.globalAlpha = state === entry.state ? 0.92 : 0.48;
+            ctx.fillRect(left, cursorY, barWidth, segmentHeight);
+            ctx.restore();
+        });
+    });
+}
+
+function drawEmotionReport(report) {
+    drawDisplayText("表情混合报告", W / 2, 194, 24, UI_THEME.blue);
+
+    const leftX = 56;
+    const topY = 214;
+    const leftW = 360;
+    const panelH = 198;
+    drawRoundedRect(leftX, topY, leftW, panelH, 18, UI_THEME.panel, UI_THEME.stroke);
+    drawText(report.enabled ? "本局占比" : "表情识别已关闭", leftX + 20, topY + 28, 19, UI_THEME.ink, "left");
+    drawEmotionMixBars(report, leftX + 24, topY + 62, leftW - 48);
+
+    const rightX = 442;
+    const rightW = 402;
+    drawRoundedRect(rightX, topY, rightW, panelH, 18, UI_THEME.panel, UI_THEME.stroke);
+    const dominantColor = EMOTION_COLORS[report.dominantState] || UI_THEME.ink;
+    drawText("主导状态", rightX + 24, topY + 30, 18, UI_THEME.muted, "left");
+    drawText(
+        report.sampleMs > 0 ? `${getEmotionLabel(report.dominantState)} ${report.dominantPercent}%` : "未形成结论",
+        rightX + 24,
+        topY + 68,
+        28,
+        report.sampleMs > 0 ? dominantColor : UI_THEME.faint,
+        "left"
+    );
+    drawText(`有效采样 ${report.sampleSeconds}s / 覆盖 ${report.validPercent}%`, rightX + 24, topY + 106, 18, UI_THEME.ink, "left");
+    drawText(`无样本 ${report.noDataSeconds}s`, rightX + 24, topY + 134, 17, UI_THEME.muted, "left");
+    drawWrappedText(report.summary, rightX + 24, topY + 164, rightW - 48, 15, UI_THEME.muted, 20);
+
+    drawEmotionTimeline(report, 56, 428, 788, 48);
 }
 
 function checkSlicePerfect(center, radius, start, end) {
@@ -2674,7 +3023,7 @@ class ClearWave {
 
         if (this.source === "openHand") {
             ctx.globalAlpha = Math.min(1, alpha * 1.2);
-            drawText("PALM CLEAR", 0, -58 - progress * 18, 28, "#ffdc8f");
+            drawText("掌心清屏", 0, -58 - progress * 18, 28, "#ffdc8f");
         }
         ctx.restore();
     }
@@ -2729,6 +3078,8 @@ function resetGame(mode) {
     menuHold = menuItems.map(() => 0);
     resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
+    gameoverTabHold = gameoverReportTabs.map(() => 0);
+    gameoverReportPage = "adaptive";
     playExitHold = 0;
     clearItemHold = 0;
     openHandClearHold = 0;
@@ -2738,6 +3089,7 @@ function resetGame(mode) {
     resetComboStats();
     resetTimeStop();
     startAdaptiveSession();
+    startEmotionSession();
 
     if (mode === MODES.zen) {
         remainingTime = 90;
@@ -2767,6 +3119,8 @@ function returnToMenu() {
     menuHold = menuItems.map(() => 0);
     resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
+    gameoverTabHold = gameoverReportTabs.map(() => 0);
+    gameoverReportPage = "adaptive";
     playExitHold = 0;
     clearItemHold = 0;
     openHandClearHold = 0;
@@ -2776,6 +3130,7 @@ function returnToMenu() {
     resetComboStats();
     resetTimeStop();
     adaptiveSession.phase = "idle";
+    emotionSession.enabled = false;
     window.adaptiveSensitivityScale = 1;
     resetDojoHold();
     if (ui.cameraStatus) {
@@ -2881,8 +3236,8 @@ function spawnFruit(step) {
 }
 
 function updateMenu(delta, input) {
-    drawText("Select Game Mode", W / 2, 88, 58, "#ffffff");
-    drawText("先选择本局携带道具，再停留到模式按钮开始", W / 2, 132, 24, "rgba(255,255,255,0.78)");
+    drawDisplayText("选择模式", W / 2, 84, 50, UI_THEME.ink);
+    drawText("先选择本局携带道具，再停留到模式按钮开始", W / 2, 126, 21, UI_THEME.muted);
 
     const loadoutHovered = updateLoadoutSelector(delta, input);
 
@@ -2897,8 +3252,13 @@ function updateMenu(delta, input) {
         }
 
         const bounds = getButtonBounds(item);
-        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 18, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-        drawText(item.text, item.x, item.y - 2, item.height > 60 ? 32 : 26, hovered ? item.color : "#ffffff");
+        drawRoundedRect(bounds.x, bounds.y, bounds.width, bounds.height, 18, hovered ? UI_THEME.panelHover : UI_THEME.panel, hovered ? item.color : UI_THEME.stroke);
+        if (item.detail) {
+            drawText(item.text, item.x, item.y - 12, 27, hovered ? item.color : UI_THEME.ink);
+            drawText(item.detail, item.x, item.y + 18, 16, hovered ? UI_THEME.muted : UI_THEME.faint);
+        } else {
+            drawText(item.text, item.x, item.y - 1, 23, hovered ? item.color : UI_THEME.ink);
+        }
         drawLoadingArc(bounds.x + bounds.width - 30, item.y, 15, menuHold[index] / REQUIRED_HOLD_MS, item.color);
 
         if (menuHold[index] >= REQUIRED_HOLD_MS) {
@@ -2931,34 +3291,29 @@ function updateMenu(delta, input) {
 }
 
 function updateSettings(delta, input) {
-    drawText("Settings", W / 2, 90, 58, "#ffffff");
-    drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, "rgba(255,255,255,0.78)");
-    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  自动调节：${getSettingsState().autoSensitivity === false ? "关" : "开"}`, W / 2, 170, 22, "rgba(255,255,255,0.62)");
+    drawDisplayText("设置", W / 2, 90, 52, UI_THEME.ink);
+    drawText("同样支持鼠标或手势，停留 1 秒即可选中", W / 2, 132, 24, UI_THEME.muted);
+    drawText(`当前灵敏度：${(getSettingsState().sensitivity || 1.0).toFixed(2)}  |  自动调节：${getSettingsState().autoSensitivity === false ? "关" : "开"}`, W / 2, 170, 22, UI_THEME.faint);
 
     const centerX = W / 2;
     const sliderLeft = centerX - 180;
     const sliderRight = centerX + 180;
-    const muteX = 110;
-    const muteY = 320;
-    const cameraX = W - 110;
-    const cameraY = 320;
-    const effectsX = centerX - 240;
-    const effectsY = 520;
-    const backX = centerX + 170;
-    const backY = 520;
+    const toggleY = 470;
 
-    settingsItems[0].x = muteX;
-    settingsItems[0].y = muteY;
-    settingsItems[1].x = cameraX;
-    settingsItems[1].y = cameraY;
+    settingsItems[0].x = 120;
+    settingsItems[0].y = toggleY;
+    settingsItems[1].x = 340;
+    settingsItems[1].y = toggleY;
     settingsItems[2].x = centerX;
     settingsItems[2].y = 390;
-    settingsItems[3].x = effectsX;
-    settingsItems[3].y = effectsY;
-    settingsItems[4].x = backX;
-    settingsItems[4].y = backY;
+    settingsItems[3].x = 560;
+    settingsItems[3].y = toggleY;
+    settingsItems[4].x = 780;
+    settingsItems[4].y = toggleY;
+    settingsItems[5].x = centerX;
+    settingsItems[5].y = 558;
 
-    const hoveredIndex = getHoveredIndex(settingsItems, input.x, input.y, 130);
+    const hoveredIndex = getHoveredIndex(settingsItems, input.x, input.y, 86);
     let trigger = null;
 
     if (hoveredIndex !== settingsLatchedIndex) {
@@ -2987,11 +3342,11 @@ function updateSettings(delta, input) {
                 }
                 const rowHovered = sliderHovered || (settingsSliderDragging && settingsSliderDragTarget === slider.target);
 
-                drawRoundedRect(sliderLeft - 10, y - 28, 380, 56, 18, rowHovered ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)", rowHovered ? item.color : "rgba(255,255,255,0.10)");
-                drawText(slider.label, centerX, y - 10, 24, rowHovered ? item.color : "#ffffff");
+                drawRoundedRect(sliderLeft - 10, y - 28, 380, 56, 18, rowHovered ? UI_THEME.panelHover : UI_THEME.panel, rowHovered ? item.color : UI_THEME.stroke);
+                drawText(slider.label, centerX, y - 10, 24, rowHovered ? item.color : UI_THEME.ink);
 
                 ctx.save();
-                ctx.strokeStyle = "rgba(255,255,255,0.35)";
+                ctx.strokeStyle = "rgba(34,49,58,0.16)";
                 ctx.lineWidth = 8;
                 ctx.lineCap = "round";
                 ctx.beginPath();
@@ -3034,11 +3389,11 @@ function updateSettings(delta, input) {
                 trigger = null;
             }
         } else {
-            // 对于静音、摄像头和特效强度，显示为小圆形控件
-            if (item.action === "toggleMute" || item.action === "togglePreview" || item.action === "cycleEffects") {
+            // 对于静音、摄像头、特效和表情识别，显示为小圆形控件
+            if (item.action === "toggleMute" || item.action === "togglePreview" || item.action === "cycleEffects" || item.action === "toggleEmotion") {
                 const cx = item.x;
                 const cy = item.y;
-                const r = 34;
+                const r = 30;
                 const hoveredToggle = distance(input.x, input.y, cx, cy) <= r + 12;
 
                 if (hoveredToggle && settingsLatchedIndex !== index) {
@@ -3048,16 +3403,16 @@ function updateSettings(delta, input) {
                 }
 
                 // draw label above the circle
-                drawText(label, cx, cy - r - 18, 22, "#ffffff");
+                drawText(label, cx, cy - r - 16, 18, UI_THEME.ink);
 
                 // draw circular toggle
                 ctx.save();
                 ctx.beginPath();
                 ctx.arc(cx, cy, r, 0, Math.PI * 2);
-                ctx.fillStyle = hoveredToggle ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
+                ctx.fillStyle = hoveredToggle ? UI_THEME.panelHover : UI_THEME.panel;
                 ctx.fill();
                 ctx.lineWidth = 3;
-                ctx.strokeStyle = hoveredToggle ? item.color : "rgba(255,255,255,0.12)";
+                ctx.strokeStyle = hoveredToggle ? item.color : UI_THEME.stroke;
                 ctx.stroke();
 
                 if (item.action === "cycleEffects") {
@@ -3066,18 +3421,25 @@ function updateSettings(delta, input) {
                     ctx.beginPath();
                     ctx.arc(cx, cy, r * 0.56, 0, Math.PI * 2);
                     ctx.fill();
-                    drawText(level, cx, cy + 1, 22, "#121826");
+                    drawText(level, cx, cy + 1, 22, "#ffffff");
                 } else {
-                    const stateVal = item.action === "toggleMute" ? (getSettingsState().muted ? 1 : 0) : (getSettingsState().showCameraPreview === false ? 0 : 1);
+                    let stateVal = 1;
+                    if (item.action === "toggleMute") {
+                        stateVal = getSettingsState().muted ? 1 : 0;
+                    } else if (item.action === "togglePreview") {
+                        stateVal = getSettingsState().showCameraPreview === false ? 0 : 1;
+                    } else if (item.action === "toggleEmotion") {
+                        stateVal = getSettingsState().faceDetection === false ? 0 : 1;
+                    }
                     // inner indicator
                     ctx.beginPath();
                     ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
-                    ctx.fillStyle = stateVal ? item.color : "rgba(255,255,255,0.12)";
+                    ctx.fillStyle = stateVal ? item.color : "rgba(34,49,58,0.14)";
                     ctx.fill();
                 }
                 ctx.restore();
 
-                drawLoadingArc(cx, cy + r + 10, 14, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
+                drawLoadingArc(cx, cy + r + 8, 12, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
 
                 if (settingsHold[index] >= REQUIRED_HOLD_MS) {
                     trigger = item.action;
@@ -3090,9 +3452,9 @@ function updateSettings(delta, input) {
                     settingsHold[index] = Math.max(0, settingsHold[index] - delta * 2);
                 }
 
-                drawRoundedRect(item.x - 180, item.y - 36, 360, 72, 22, hovered ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.07)", hovered ? item.color : "rgba(255,255,255,0.12)");
-                drawText(label, item.x, item.y - 4, 34, hovered ? item.color : "#ffffff");
-                drawLoadingArc(item.x, item.y + 30, 38, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
+                drawRoundedRect(item.x - 95, item.y - 24, 190, 48, 18, hovered ? UI_THEME.panelHover : UI_THEME.panel, hovered ? item.color : UI_THEME.stroke);
+                drawText(label, item.x, item.y - 1, 22, hovered ? item.color : UI_THEME.ink);
+                drawLoadingArc(item.x + 70, item.y, 12, settingsHold[index] / REQUIRED_HOLD_MS, item.color);
 
                 if (settingsHold[index] >= REQUIRED_HOLD_MS) {
                     trigger = item.action;
@@ -3112,6 +3474,10 @@ function updateSettings(delta, input) {
         resetSettingsHold();
     } else if (trigger === "cycleEffects") {
         cycleEffectLevel();
+        settingsLatchedIndex = hoveredIndex;
+        resetSettingsHold();
+    } else if (trigger === "toggleEmotion") {
+        toggleSetting("faceDetection");
         settingsLatchedIndex = hoveredIndex;
         resetSettingsHold();
     } else if (trigger === "back") {
@@ -3141,9 +3507,9 @@ function updatePlaying(delta, input) {
         playExitHold = Math.max(0, playExitHold - delta * 2);
     }
 
-    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", exitHovered ? "#ffb84d" : "rgba(255,255,255,0.12)");
-    drawText("退出", exitLeft + exitWidth / 2, exitTop + exitHeight / 2 - 1, 24, exitHovered ? "#ffb84d" : "#ffffff");
-    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, playExitHold / REQUIRED_HOLD_MS, "#ffb84d");
+    drawRoundedRect(exitLeft, exitTop, exitWidth, exitHeight, 18, exitHovered ? UI_THEME.panelHover : UI_THEME.panel, exitHovered ? UI_THEME.gold : UI_THEME.stroke);
+    drawText("退出", exitLeft + exitWidth / 2, exitTop + exitHeight / 2 - 1, 24, exitHovered ? UI_THEME.gold : UI_THEME.ink);
+    drawLoadingArc(exitLeft + exitWidth / 2, exitTop + exitHeight + 6, 18, playExitHold / REQUIRED_HOLD_MS, UI_THEME.gold);
 
     if (playExitHold >= REQUIRED_HOLD_MS) {
         returnToMenu();
@@ -3153,6 +3519,7 @@ function updatePlaying(delta, input) {
     consumeSnapTrigger(input);
     updateTimeStopTimers(delta);
     updateAdaptiveSession(delta, input);
+    updateEmotionSession(delta);
 
     trail.push({ x: input.x, y: input.y });
     if (trail.length > 14) {
@@ -3276,15 +3643,15 @@ function updatePlaying(delta, input) {
     drawComboEdgeEffect();
     drawOpenHandClearIndicator(input);
 
-    drawText(`Score: ${score}`, 80, 80, 30, "#ffffff", "left");
-    drawText(`💰 金币: ${money}`, W / 2, 45, 24, "#ffd166", "center");
+    drawText(`分数 ${score}`, 80, 80, 30, UI_THEME.ink, "left");
+    drawText(`金币 ${money}`, W / 2, 45, 24, UI_THEME.gold, "center");
     drawCarriedItemHud(clearButtonHovered);
     drawComboHud();
     drawTimeStopHud();
     if (chosenMode === MODES.classic) {
-        drawText(`Lives: ${"❤".repeat(Math.max(0, lives))}`, W - 120, 80, 30, lives === 1 ? "#ff6b6b" : "#7ef7c5", "right");
+        drawText(`生命 ${Math.max(0, lives)}`, W - 120, 80, 30, lives === 1 ? UI_THEME.danger : UI_THEME.jade, "right");
     } else {
-        drawText(`Time: ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? "#6db8ff" : "#dba4ff", "right");
+        drawText(`时间 ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? UI_THEME.blue : UI_THEME.violet, "right");
     }
 }
 
@@ -3292,15 +3659,30 @@ function updateGameover(delta, input) {
     const bestMultiplier = getComboMultiplierForCount(bestCombo);
     const bestComboColor = getComboColor(bestCombo);
     const report = getAdaptiveReport();
+    const emotionReport = getEmotionReport();
 
-    drawRoundedRect(54, 42, W - 108, H - 70, 28, "rgba(3, 8, 16, 0.62)", "rgba(255,255,255,0.12)");
-    drawText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "TIME UP!" : "GAME OVER", W / 2, 84, 48, "#ff6b6b");
-    drawText(`Final Score: ${score}`, W / 2 - 42, 136, 28, "#ffffff", "right");
-    drawText(`Best Combo: ${bestCombo}   Best x${bestMultiplier}`, W / 2 + 30, 136, 24, bestComboColor, "left");
-    drawAdaptiveReport(report);
+    drawRoundedRect(40, 30, W - 80, H - 58, 26, "rgba(255,255,255,0.64)", UI_THEME.stroke);
+    drawDisplayText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "时间到" : "游戏结束", W / 2, 76, 40, UI_THEME.danger);
+    drawText(`最终分数 ${score}`, W / 2 - 36, 122, 22, UI_THEME.ink, "right");
+    drawText(`最佳连击 ${bestCombo}   x${bestMultiplier}`, W / 2 + 30, 122, 19, bestComboColor, "left");
+    drawGameoverReportTabs(delta, input);
+    if (gameoverReportPage === "emotion") {
+        drawEmotionReport(emotionReport);
+    } else {
+        drawAdaptiveReport(report);
+    }
 
     let trigger = null;
-    const hoveredIndexG = getHoveredIndex(gameoverItems, input.x, input.y, 95);
+    ctx.save();
+    ctx.strokeStyle = "rgba(34,49,58,0.12)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(86, 500);
+    ctx.lineTo(W - 86, 500);
+    ctx.stroke();
+    ctx.restore();
+
+    const hoveredIndexG = getHoveredIndex(gameoverItems, input.x, input.y, 78);
     gameoverItems.forEach((item, index) => {
         const hovered = index === hoveredIndexG;
         if (hovered) {
@@ -3309,9 +3691,9 @@ function updateGameover(delta, input) {
             gameoverHold[index] = Math.max(0, gameoverHold[index] - delta * 2);
         }
 
-        drawRoundedRect(item.x - 110, item.y - 30, 220, 60, 20, hovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.08)", hovered ? item.color : "rgba(255,255,255,0.12)");
-        drawText(item.text, item.x, item.y - 2, 30, hovered ? item.color : "#ffffff");
-        drawLoadingArc(item.x, item.y + 26, 32, gameoverHold[index] / REQUIRED_HOLD_MS, item.color);
+        drawRoundedRect(item.x - 96, item.y - 23, 192, 46, 16, hovered ? UI_THEME.panelHover : UI_THEME.panel, hovered ? item.color : UI_THEME.stroke);
+        drawText(item.text, item.x, item.y - 1, 23, hovered ? item.color : UI_THEME.ink);
+        drawLoadingArc(item.x + 70, item.y, 11, gameoverHold[index] / REQUIRED_HOLD_MS, item.color);
 
         if (gameoverHold[index] >= REQUIRED_HOLD_MS) {
             trigger = item.action;
@@ -3328,10 +3710,16 @@ function updateGameover(delta, input) {
 function drawPointer(input) {
     if (gameState === GAME.PLAYING) return; // only show pointer in menu/gameover
     ctx.save();
-    ctx.strokeStyle = input.openHand ? "#ffb84d" : input.fist ? "#ff6b6b" : "#7ef7c5";
-    ctx.lineWidth = 2;
+    if (gameState === GAME.GAMEOVER) {
+        ctx.globalAlpha = 0.28;
+    }
+    ctx.strokeStyle = input.openHand ? UI_THEME.gold : input.fist ? UI_THEME.danger : UI_THEME.jade;
+    ctx.lineWidth = gameState === GAME.GAMEOVER ? 1.5 : 2;
     ctx.beginPath();
-    ctx.arc(input.x, input.y, input.openHand ? 16 : input.fist ? 14 : 12, 0, Math.PI * 2);
+    const radius = gameState === GAME.GAMEOVER
+        ? (input.openHand ? 8 : input.fist ? 7 : 6)
+        : (input.openHand ? 16 : input.fist ? 14 : 12);
+    ctx.arc(input.x, input.y, radius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
 }
@@ -3339,6 +3727,7 @@ function drawPointer(input) {
 function loop(timestamp) {
     const delta = lastTimestamp ? Math.min(34, timestamp - lastTimestamp) : 16.67;
     lastTimestamp = timestamp;
+    syncCanvasResolution();
     const input = getInputPosition();
 
     drawBackground();
@@ -3433,7 +3822,7 @@ canvas.addEventListener("pointerdown", (event) => {
             return;
         }
 
-        const idx = getHoveredIndex(settingsItems, x, y, 130);
+        const idx = getHoveredIndex(settingsItems, x, y, 86);
         if (idx !== -1) {
             const action = settingsItems[idx].action;
             if (action === "toggleMute") {
@@ -3441,6 +3830,8 @@ canvas.addEventListener("pointerdown", (event) => {
                 syncBgmForScene();
             } else if (action === "togglePreview") {
                 toggleSetting("showCameraPreview");
+            } else if (action === "toggleEmotion") {
+                toggleSetting("faceDetection");
             } else if (action === "cycleEffects") {
                 cycleEffectLevel();
             } else if (action === "sensitivitySlider") {
@@ -3452,7 +3843,14 @@ canvas.addEventListener("pointerdown", (event) => {
             return;
         }
     } else if (gameState === GAME.GAMEOVER) {
-        const idx = getHoveredIndex(gameoverItems, x, y, 95);
+        const tabIndex = getGameoverTabIndexAt(x, y);
+        if (tabIndex !== -1) {
+            gameoverReportPage = gameoverReportTabs[tabIndex].page;
+            gameoverTabHold = gameoverReportTabs.map(() => 0);
+            return;
+        }
+
+        const idx = getHoveredIndex(gameoverItems, x, y, 78);
         if (idx !== -1) {
             const action = gameoverItems[idx].action;
             if (action === "restart") resetGame(chosenMode);
@@ -3484,7 +3882,7 @@ window.addEventListener("load", () => {
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = readStoredValue("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+    let s = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, faceDetection: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
@@ -3494,6 +3892,7 @@ function loadSettings() {
     s.muted = !!s.muted;
     s.autoSensitivity = s.autoSensitivity !== false;
     s.showCameraPreview = s.showCameraPreview !== false;
+    s.faceDetection = s.faceDetection !== false;
     s.sensitivity = Number.isFinite(sensitivityValue) ? clamp(sensitivityValue, 0.6, 1.6) : 1.0;
     s.musicVolume = Number.isFinite(musicVolumeValue) ? clamp(musicVolumeValue, 0, 1) : 0.45;
     s.sfxVolume = Number.isFinite(sfxVolumeValue) ? clamp(sfxVolumeValue, 0, 1) : 0.8;

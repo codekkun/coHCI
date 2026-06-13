@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>水果忍者 Web 版</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=light-crisp-report-20260613">
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js" defer></script>
 </head>
 <body>
     <div class="page-shell">
@@ -16,6 +17,7 @@
             </div>
             <div class="status-group">
                 <span id="cameraStatus" class="status-pill">正在等待摄像头</span>
+                <span id="emotionStatus" class="status-pill mood-pill" data-state="unknown">表情：等待采样</span>
             </div>
         </header>
 
@@ -30,14 +32,14 @@
                 </div>
                 <div>
                     <p class="hud-label">自适应</p>
-                    <p>每局使用固定灵敏度；结算后根据轨迹覆盖、疲劳趋势和命中率生成下一局灵敏度，并与上一局对比。</p>
+                    <p>每局使用固定灵敏度；表情识别只做独立记录，不参与出果、计时、得分或难度调节。</p>
                 </div>
             </section>
         </main>
     </div>
 
-    <script src="js/audio.js"></script>
-    <script src="js/meidapipe.js"></script>
-    <script src="js/main.js"></script>
+    <script src="js/audio.js?v=light-crisp-report-20260613"></script>
+    <script src="js/meidapipe.js?v=light-crisp-report-20260613"></script>
+    <script src="js/main.js?v=light-crisp-report-20260613"></script>
 </body>
 </html>
