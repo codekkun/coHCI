@@ -54,6 +54,13 @@ const CARRY_ITEM = {
     TIME_STOP: "timeStop",
 };
 
+const DIFFICULTY_LEVELS = {
+    easy: { label: "简单", maxSpawn: 1, bombProb: 0.05, speedMultiplier: 0.8 },
+    medium: { label: "中等", maxSpawn: 2, bombProb: 0.15, speedMultiplier: 1.0 },
+    hard: { label: "困难", maxSpawn: 4, bombProb: 0.35, speedMultiplier: 1.25 }
+};
+const DIFFICULTY_ORDER = ["easy", "medium", "hard"];
+
 const REQUIRED_HOLD_MS = 900;
 const OPEN_HAND_CLEAR_HOLD_MS = 420;
 const GESTURE_INTERLOCK_MS = 700;
@@ -162,12 +169,13 @@ const menuItems = [
 ];
 
 const settingsItems = [
-    { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 220, color: UI_THEME.jade },
-    { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 320, color: UI_THEME.blue },
-    { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 420, color: UI_THEME.gold },
-    { action: "cycleEffects", text: () => `特效强度：${getEffectConfig().label}`, x: W / 2, y: 500, color: UI_THEME.orange },
-    { action: "toggleEmotion", text: () => `表情识别：${window.settings && window.settings.faceDetection === false ? "关" : "开"}`, x: W / 2, y: 500, color: "#278fa0" },
-    { action: "back", text: () => "返回菜单", x: W / 2, y: 550, color: UI_THEME.violet },
+    { action: "toggleMute", text: () => `静音：${window.settings && window.settings.muted ? "开" : "关"}`, x: W / 2, y: 180, color: UI_THEME.jade },
+    { action: "togglePreview", text: () => `摄像头画面：${window.settings && window.settings.showCameraPreview === false ? "关" : "开"}`, x: W / 2, y: 260, color: UI_THEME.blue },
+    { action: "sensitivitySlider", text: () => "灵敏度", x: W / 2, y: 340, color: UI_THEME.gold },
+    { action: "cycleEffects", text: () => `特效强度：${getEffectConfig().label}`, x: W / 2, y: 440, color: UI_THEME.orange },
+    { action: "cycleDifficulty", text: () => `游戏难度：${DIFFICULTY_LEVELS[window.settings.difficulty || "medium"].label}`, x: W / 2, y: 510, color: UI_THEME.danger },
+    { action: "back", text: () => "返回菜单", x: W / 2, y: 570, color: UI_THEME.violet },
+    { action: "toggleEmotion", text: () => `表情识别：${window.settings && window.settings.faceDetection === false ? "关" : "开"}`, x: 160, y: 570, color: "#278fa0" }
 ];
 
 const settingsSliderRows = [
@@ -3567,9 +3575,25 @@ function getHoveredIndex(items, px, py, radius) {
 }
 
 function spawnFruit(step) {
-    const chance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : isDuelMode() ? 0.068 : 0.055;
-    if (Math.random() < chance * step) {
-        const fruit = new Fruit(chosenMode);
+    // 1. 获取当前设置的难度（如果未设置，默认使用中等 "medium"）
+    const diffLevel = (window.settings && window.settings.difficulty) ? window.settings.difficulty : "medium";
+    
+    // 2. 定义难度对生成频率的影响倍率
+    const spawnMultipliers = {
+        easy: 0.6,   // 简单：生成频率降低（水果比较稀疏）
+        medium: 1.0, // 中等：原汁原味的生成频率
+        hard: 1.6    // 困难：生成频率大幅提高（满屏水果）
+    };
+    const spawnMult = spawnMultipliers[diffLevel];
+
+    // 3. 计算当前模式下的基础概率，并乘上难度倍率
+    const baseChance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : isDuelMode() ? 0.068 : 0.055;
+    const finalChance = baseChance * spawnMult;
+
+    // 4. 触发生成
+    if (Math.random() < finalChance * step) {
+        // 【关键修改】：把 diffLevel（难度）作为第二个参数传给 Fruit，用来控制炸弹概率和抛出速度
+        const fruit = new Fruit(chosenMode, diffLevel); 
         fruits.push(fruit);
         recordAdaptiveSpawn(fruit);
     }
@@ -3823,7 +3847,21 @@ function updateSettings(delta, input) {
         toggleSetting("faceDetection");
         settingsLatchedIndex = hoveredIndex;
         resetSettingsHold();
-    } else if (trigger === "back") {
+    } 
+    else if (trigger === "cycleDifficulty") {
+    // 切换下一个难度
+    const currentIdx = DIFFICULTY_ORDER.indexOf(window.settings.difficulty || "medium");
+    const nextIdx = (currentIdx + 1) % DIFFICULTY_ORDER.length;
+    window.settings.difficulty = DIFFICULTY_ORDER[nextIdx];
+    
+    // 保存设置 (根据你的项目具体实现，可能是 localStorage 或专用的 saveSettings 函数)
+    localStorage.setItem("cohci_settings", JSON.stringify(window.settings));
+    
+    // 播放点击音效并重置长按状态
+    if (window.playSound) window.playSound("ui");
+    settingsLatchedIndex = hoveredIndex;
+    resetSettingsHold();
+    }else if (trigger === "back") {
         returnToMenu();
         gameState = GAME.MENU;
     }
@@ -4166,13 +4204,14 @@ window.addEventListener("load", () => {
 // ---------------- Settings UI ----------------
 function loadSettings() {
     const raw = readStoredValue("cohci_settings");
-    let s = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, faceDetection: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" };
+    let s = { muted: false, sensitivity: 1.0, autoSensitivity: true, showCameraPreview: true, faceDetection: true, musicVolume: 0.45, sfxVolume: 0.8, effectLevel: "medium" ,difficulty: "medium"};
     try {
         if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) {}
     const sensitivityValue = Number(s.sensitivity);
     const musicVolumeValue = Number(s.musicVolume);
     const sfxVolumeValue = Number(s.sfxVolume);
+    s.difficulty = DIFFICULTY_ORDER.includes(s.difficulty) ? s.difficulty : "medium"; 
     s.muted = !!s.muted;
     s.autoSensitivity = s.autoSensitivity !== false;
     s.showCameraPreview = s.showCameraPreview !== false;
