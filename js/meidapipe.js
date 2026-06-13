@@ -8,6 +8,9 @@ window.cameraReady = false;
 window.snapTriggered = false;
 window.snapX = 450;
 window.snapY = 300;
+window.snapTriggeredAt = 0;
+window.snapHandIndex = 0;
+window.handPointers = [];
 window.faceState = "unknown";
 window.faceConfidence = 0;
 window.faceDetectionReady = false;
@@ -17,12 +20,9 @@ window.faceExpressionScores = {};
 window.faceStateChangedAt = 0;
 window.faceSampleUpdatedAt = 0;
 let lostHandFrames = 0;
-let snapPrimed = false;
-let snapPrimedAt = 0;
-let snapCloseDistance = Infinity;
-let snapLastDistance = Infinity;
-let snapLastTime = 0;
-let snapCooldownUntil = 0;
+const MAX_HAND_POINTERS = 2;
+const SNAP_EVENT_TTL_MS = 450;
+const snapStates = Array.from({ length: MAX_HAND_POINTERS }, () => createSnapState());
 const FIST_THRESHOLD = 0.13;
 const FACE_SAMPLE_INTERVAL_MS = 360;
 const FACE_MISSING_TIMEOUT_MS = 1600;
@@ -163,6 +163,47 @@ function landmarkDistance(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function createSnapState() {
+    return {
+        primed: false,
+        primedAt: 0,
+        closeStableSince: 0,
+        closePoseValid: false,
+        closeDistance: Infinity,
+        lastDistance: Infinity,
+        lastTime: 0,
+        cooldownUntil: 0,
+    };
+}
+
+function resetSnapState(state) {
+    state.primed = false;
+    state.primedAt = 0;
+    state.closeStableSince = 0;
+    state.closePoseValid = false;
+    state.closeDistance = Infinity;
+}
+
+function resetAllSnapStates() {
+    snapStates.forEach(resetSnapState);
+}
+
+function expireSnapTrigger(now) {
+    if (window.snapTriggered && now - (Number(window.snapTriggeredAt) || 0) > SNAP_EVENT_TTL_MS) {
+        window.snapTriggered = false;
+    }
+}
+
+function isFingerExtended(landmarks, finger, palmScale, wrist) {
+    const tip = landmarks[finger.tip];
+    const pip = landmarks[finger.pip];
+    const mcp = landmarks[finger.mcp];
+    return (
+        landmarkDistance(tip, wrist) > landmarkDistance(pip, wrist) + palmScale * 0.10 &&
+        landmarkDistance(tip, mcp) > palmScale * 0.54
+    );
+}
+
 function analyzeOpenHand(landmarks) {
     const palmScale = getPalmScale(landmarks);
     const wrist = landmarks[0];
@@ -225,71 +266,111 @@ function getPalmScale(landmarks) {
     return Math.max(0.08, palmHeight, palmWidth);
 }
 
-function updateSnapState(landmarks, width, height, normCoord, openHandState) {
+function analyzeSnapIntent(landmarks, palmScale, distanceRatio, openHandState) {
+    const wrist = landmarks[0];
+    const thumbTip = landmarks[4];
+    const indexTip = landmarks[8];
+    const middleTip = landmarks[12];
+    const ringTip = landmarks[16];
+    const indexExtended = isFingerExtended(landmarks, { tip: 8, pip: 6, mcp: 5 }, palmScale, wrist);
+    const thumbIndexRatio = landmarkDistance(thumbTip, indexTip) / palmScale;
+    const thumbRingRatio = landmarkDistance(thumbTip, ringTip) / palmScale;
+    const middleCurlRatio = landmarkDistance(middleTip, landmarks[9]) / palmScale;
+    const middleIsPrimary =
+        distanceRatio < thumbIndexRatio * 0.86 &&
+        distanceRatio < thumbRingRatio + 0.10;
+    const middleBentEnough = middleCurlRatio < 0.86 || landmarkDistance(middleTip, landmarks[10]) < palmScale * 0.34;
+    const notWideOpen = !openHandState || (openHandState.extendedCount <= 3 && !openHandState.isOpenHand);
+
+    return {
+        canPrime:
+            notWideOpen &&
+            indexExtended &&
+            middleIsPrimary &&
+            middleBentEnough &&
+            thumbIndexRatio > 0.40,
+        canRelease:
+            notWideOpen &&
+            indexExtended &&
+            thumbIndexRatio > 0.38,
+    };
+}
+
+function updateSnapState(landmarks, width, height, normCoord, openHandState, state, handIndex) {
     const now = performance.now();
+    expireSnapTrigger(now);
     const thumbTip = landmarks[4];
     const middleTip = landmarks[12];
     const palmScale = getPalmScale(landmarks);
     const distanceRatio = landmarkDistance(thumbTip, middleTip) / palmScale;
-    const stableOpenHand = Boolean(openHandState && openHandState.isOpenHand);
+    const snapIntent = analyzeSnapIntent(landmarks, palmScale, distanceRatio, openHandState);
+    const stableOpenHand = Boolean(openHandState && (openHandState.isOpenHand || openHandState.extendedCount >= 4));
     const snapBlocked =
-        now < snapCooldownUntil ||
+        now < state.cooldownUntil ||
         now < (Number(window.gestureLockUntil) || 0);
 
-    if (snapBlocked || (stableOpenHand && !snapPrimed)) {
-        snapPrimed = false;
-        window.snapTriggered = false;
-        snapLastDistance = distanceRatio;
-        snapLastTime = now;
+    if (snapBlocked || (stableOpenHand && !state.primed)) {
+        resetSnapState(state);
+        state.lastDistance = distanceRatio;
+        state.lastTime = now;
         return;
     }
 
-    const closeThreshold = 0.46;
-    const openThreshold = 0.74;
-    const minSeparation = 0.30;
-    const minVelocity = 1.65;
+    const closeThreshold = 0.38;
+    const openThreshold = 0.78;
+    const minSeparation = 0.36;
+    const minVelocity = 2.35;
+    const minClosedMs = 55;
+    const maxSnapMs = 430;
 
-    if (distanceRatio < closeThreshold) {
-        if (!snapPrimed || distanceRatio < snapCloseDistance) {
-            snapPrimed = true;
-            snapPrimedAt = now;
-            snapCloseDistance = distanceRatio;
+    if (distanceRatio < closeThreshold && snapIntent.canPrime) {
+        if (!state.primed) {
+            state.primed = true;
+            state.primedAt = now;
+            state.closeStableSince = now;
+            state.closePoseValid = true;
+            state.closeDistance = distanceRatio;
+        } else {
+            state.closeDistance = Math.min(state.closeDistance, distanceRatio);
+            state.closePoseValid = state.closePoseValid && snapIntent.canPrime;
         }
-    } else if (snapPrimed) {
-        const elapsed = now - snapPrimedAt;
-        const frameSeconds = Math.max(0.016, (now - snapLastTime) / 1000);
-        const velocity = (distanceRatio - snapLastDistance) / frameSeconds;
-        const separatedEnough = distanceRatio > openThreshold && distanceRatio - snapCloseDistance > minSeparation;
-        const timingLooksRight = elapsed >= 35 && elapsed <= 460;
+    } else if (state.primed) {
+        const elapsed = now - state.primedAt;
+        const closedMs = state.closeStableSince ? now - state.closeStableSince : 0;
+        const frameSeconds = Math.max(0.016, (now - state.lastTime) / 1000);
+        const velocity = (distanceRatio - state.lastDistance) / frameSeconds;
+        const separatedEnough =
+            snapIntent.canRelease &&
+            distanceRatio > openThreshold &&
+            distanceRatio - state.closeDistance > minSeparation;
+        const timingLooksRight = closedMs >= minClosedMs && elapsed <= maxSnapMs;
 
-        if (separatedEnough && timingLooksRight && velocity > minVelocity) {
+        if (state.closePoseValid && separatedEnough && timingLooksRight && velocity > minVelocity) {
             const snapMidX = (thumbTip.x + middleTip.x) / 2;
             const snapMidY = (thumbTip.y + middleTip.y) / 2;
             window.snapTriggered = true;
+            window.snapTriggeredAt = now;
+            window.snapHandIndex = handIndex;
             window.snapX = (1 - normCoord(snapMidX)) * width;
             window.snapY = normCoord(snapMidY) * height;
-            snapCooldownUntil = now + 1500;
-            snapPrimed = false;
-        } else if (elapsed > 560 || distanceRatio > 1.28) {
-            snapPrimed = false;
+            state.cooldownUntil = now + 1500;
+            resetSnapState(state);
+        } else if (elapsed > 560 || distanceRatio > 1.20 || stableOpenHand || (distanceRatio < closeThreshold && !snapIntent.canPrime)) {
+            resetSnapState(state);
         }
     }
 
-    snapLastDistance = distanceRatio;
-    snapLastTime = now;
+    state.lastDistance = distanceRatio;
+    state.lastTime = now;
 }
 
 function updateHandState(results) {
     const width = window.GAME_WIDTH || 900;
     const height = window.GAME_HEIGHT || 600;
+    const now = performance.now();
+    expireSnapTrigger(now);
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
-        const indexTip = landmarks[8];
-        const localIsFist = detectFist(landmarks);
-        const openHandState = analyzeOpenHand(landmarks);
-
-        // 增强可达范围并根据设置调整灵敏度
         const margin = 0.05;
         const baseSensitivity = (window.settings && window.settings.sensitivity) ? Number(window.settings.sensitivity) : 1.0;
         const adaptiveScale = Number(window.adaptiveSensitivityScale) || 1;
@@ -300,35 +381,67 @@ function updateHandState(results) {
             return clamp(n, 0, 1);
         }
 
-        updateSnapState(landmarks, width, height, normCoord, openHandState);
-        const localIsOpenHand = !localIsFist && !window.snapTriggered && !snapPrimed && openHandState.isOpenHand;
+        const previousPointers = Array.isArray(window.handPointers) ? window.handPointers : [];
+        const detectedPointers = results.multiHandLandmarks
+            .slice(0, MAX_HAND_POINTERS)
+            .map((landmarks, sourceIndex) => {
+                const indexTip = landmarks[8];
+                const localIsFist = detectFist(landmarks);
+                const openHandState = analyzeOpenHand(landmarks);
+                const snapState = snapStates[sourceIndex] || snapStates[0];
+                updateSnapState(landmarks, width, height, normCoord, openHandState, snapState, sourceIndex);
+                const localIsOpenHand = !localIsFist && !snapState.primed && openHandState.isOpenHand;
 
-        const nx = normCoord(indexTip.x);
-        const ny = normCoord(indexTip.y);
+                const nx = normCoord(indexTip.x);
+                const ny = normCoord(indexTip.y);
+                const adjX = 0.5 + (nx - 0.5) * sensitivity;
+                const adjY = 0.5 + (ny - 0.5) * sensitivity;
 
-        // 根据灵敏度扩大或缩小偏移
-        const adjX = 0.5 + (nx - 0.5) * sensitivity;
-        const adjY = 0.5 + (ny - 0.5) * sensitivity;
+                return {
+                    x: clamp((1 - adjX) * width, 0, width),
+                    y: clamp(adjY * height, 0, height),
+                    fist: localIsFist,
+                    openHand: localIsOpenHand,
+                    sourceIndex,
+                };
+            })
+            .sort((a, b) => a.x - b.x)
+            .map((point, playerIndex) => {
+                const previous = previousPointers[playerIndex];
+                const hasPrevious =
+                    previous &&
+                    Number.isFinite(previous.x) &&
+                    Number.isFinite(previous.y);
+                return {
+                    x: hasPrevious ? previous.x * 0.45 + point.x * 0.55 : point.x,
+                    y: hasPrevious ? previous.y * 0.45 + point.y * 0.55 : point.y,
+                    fist: point.fist,
+                    openHand: point.openHand,
+                    sourceIndex: point.sourceIndex,
+                    playerIndex,
+                };
+            });
 
-        const nextX = (1 - adjX) * width; // x 镜像
-        const nextY = adjY * height;
-
-        window.handX = window.handX * 0.45 + nextX * 0.55;
-        window.handY = window.handY * 0.45 + nextY * 0.55;
-        window.isFist = localIsFist;
-        window.isOpenPalm = localIsOpenHand;
-        window.isOpenHand = localIsOpenHand;
-        window.handTracked = true;
+        window.handPointers = detectedPointers;
+        const primaryPointer = detectedPointers[0];
+        if (primaryPointer) {
+            window.handX = primaryPointer.x;
+            window.handY = primaryPointer.y;
+            window.isFist = primaryPointer.fist;
+            window.isOpenPalm = primaryPointer.openHand;
+            window.isOpenHand = primaryPointer.openHand;
+            window.handTracked = true;
+        }
         lostHandFrames = 0;
-        // 表情采样由独立 FaceMesh 通道处理，手势坐标不依赖表情结果。
     } else {
         lostHandFrames += 1;
         if (lostHandFrames > 6) {
+            window.handPointers = [];
             window.handTracked = false;
             window.isFist = false;
             window.isOpenPalm = false;
             window.isOpenHand = false;
-            snapPrimed = false;
+            resetAllSnapStates();
             window.snapTriggered = false;
         }
     }
@@ -611,7 +724,7 @@ async function startCamera() {
         });
 
         hands.setOptions({
-            maxNumHands: 1,
+            maxNumHands: MAX_HAND_POINTERS,
             modelComplexity: 1,
             minDetectionConfidence: 0.45,
             minTrackingConfidence: 0.45,
