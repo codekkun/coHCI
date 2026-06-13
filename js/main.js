@@ -45,6 +45,7 @@ const MODES = {
     classic: 1,
     zen: 2,
     arcade: 3,
+    duel: 4,
 };
 
 const CARRY_ITEM = {
@@ -66,6 +67,10 @@ const TIME_STOP_SLOW_FACTOR = 0.04;
 const TIME_STOP_BGM_VOLUME_FACTOR = 0.18;
 const TIME_STOP_SOUND = "时间停止";
 const ADAPTIVE_CALIBRATION_MS = 3600;
+const DUEL_DURATION_SECONDS = 60;
+const DUEL_PLAYER_COUNT = 2;
+const DUEL_BOMB_PENALTY = 20;
+const DUEL_BLADE_COLORS = ["#cff4ff", "#2f80c2"];
 const ADAPTIVE_SAMPLE_INTERVAL_MS = 45;
 const ADAPTIVE_GRID_COLS = 3;
 const ADAPTIVE_GRID_ROWS = 3;
@@ -151,8 +156,9 @@ const menuItems = [
     { text: "禅意模式", mode: MODES.zen, x: W / 2 + 195, y: 278, width: 340, height: 74, color: UI_THEME.blue, detail: "90 秒放松练习" },
     { text: "街机模式", mode: MODES.arcade, x: W / 2 - 195, y: 370, width: 340, height: 74, color: UI_THEME.violet, detail: "60 秒高密度挑战" },
     { text: "道场", mode: "dojo", x: W / 2 + 195, y: 370, width: 340, height: 74, color: "#278fa0", detail: "背景与特效预览" },
-    { text: "设置", mode: "settings", x: W / 2 - 128, y: 522, width: 226, height: 48, color: UI_THEME.gold },
-    { text: "商店", mode: "shop", x: W / 2 + 138, y: 522, width: 206, height: 48, color: UI_THEME.orange },
+    { text: "\u53cc\u4eba\u5bf9\u6218", mode: MODES.duel, x: W / 2, y: 462, width: 340, height: 64, color: UI_THEME.danger, detail: "\u53cc\u624b\u5200\u5203\uff0c60 \u79d2\u62a2\u5206" },
+    { text: "设置", mode: "settings", x: W / 2 - 128, y: 540, width: 226, height: 48, color: UI_THEME.gold },
+    { text: "商店", mode: "shop", x: W / 2 + 138, y: 540, width: 206, height: 48, color: UI_THEME.orange },
 ];
 
 const settingsItems = [
@@ -203,6 +209,8 @@ let splats = [];
 let comboEffects = [];
 let clearEffects = [];
 let trail = [];
+let playerTrails = Array.from({ length: DUEL_PLAYER_COUNT }, () => []);
+let duelPlayers = createDuelPlayers();
 let menuHold = menuItems.map(() => 0);
 let loadoutHold = loadoutOptions.map(() => 0);
 let gameoverHold = [0, 0];
@@ -927,6 +935,11 @@ function consumeSnapTrigger(input) {
     if (!window.snapTriggered) {
         return false;
     }
+    const triggeredAt = Number(window.snapTriggeredAt) || 0;
+    if (!triggeredAt || performance.now() - triggeredAt > 520) {
+        window.snapTriggered = false;
+        return false;
+    }
     window.snapTriggered = false;
     if (input.openHand || openHandClearHold > 0 || performance.now() < (Number(window.gestureLockUntil) || 0)) {
         return false;
@@ -1165,6 +1178,103 @@ function resetComboStats() {
     comboMessage = "";
     comboMessageTimer = 0;
     comboEffects = [];
+}
+
+function createDuelPlayers() {
+    return Array.from({ length: DUEL_PLAYER_COUNT }, () => ({
+        score: 0,
+        comboCount: 0,
+        comboTimer: 0,
+        bestCombo: 0,
+    }));
+}
+
+function resetDuelState() {
+    playerTrails = Array.from({ length: DUEL_PLAYER_COUNT }, () => []);
+    duelPlayers = createDuelPlayers();
+}
+
+function isDuelMode(mode = chosenMode) {
+    return mode === MODES.duel;
+}
+
+function isTimedMode(mode = chosenMode) {
+    return mode === MODES.zen || mode === MODES.arcade || isDuelMode(mode);
+}
+
+function getDuelPlayer(index) {
+    const numericIndex = Number(index);
+    const safeIndex = Number.isFinite(numericIndex) ? Math.round(clamp(numericIndex, 0, DUEL_PLAYER_COUNT - 1)) : 0;
+    return duelPlayers[safeIndex] || duelPlayers[0];
+}
+
+function syncDuelTotalScore() {
+    score = duelPlayers.reduce((sum, player) => sum + player.score, 0);
+}
+
+function getDuelBladeColor(playerIndex) {
+    if (playerIndex === 0) {
+        return isHexColor(currentColor) ? currentColor : DUEL_BLADE_COLORS[0];
+    }
+    return DUEL_BLADE_COLORS[playerIndex] || DUEL_BLADE_COLORS[0];
+}
+
+function resetDuelCombo(playerIndex) {
+    const player = getDuelPlayer(playerIndex);
+    player.comboCount = 0;
+    player.comboTimer = 0;
+}
+
+function resetAllDuelCombos() {
+    duelPlayers.forEach((_, index) => resetDuelCombo(index));
+}
+
+function updateDuelComboTimers(delta) {
+    duelPlayers.forEach((player) => {
+        if (player.comboTimer > 0) {
+            player.comboTimer = Math.max(0, player.comboTimer - delta);
+            if (player.comboTimer === 0) {
+                player.comboCount = 0;
+            }
+        }
+    });
+}
+
+function registerDuelHit(playerIndex, x, y) {
+    const player = getDuelPlayer(playerIndex);
+    player.comboCount = player.comboTimer > 0 ? player.comboCount + 1 : 1;
+    player.comboTimer = COMBO_WINDOW_MS;
+    player.bestCombo = Math.max(player.bestCombo, player.comboCount);
+    bestCombo = Math.max(bestCombo, player.bestCombo);
+
+    comboCount = player.comboCount;
+    comboTimer = player.comboTimer;
+
+    const multiplier = getComboMultiplierForCount(player.comboCount);
+    const gainedScore = BASE_FRUIT_SCORE * multiplier;
+    const comboColor = getDuelBladeColor(playerIndex);
+    if (player.comboCount >= 2) {
+        comboMessage = `P${playerIndex + 1} ${player.comboCount} COMBO x${multiplier}`;
+        comboMessageTimer = 720;
+    }
+
+    const effectConfig = getEffectConfig();
+    if (player.comboCount >= 2 && effectConfig.burstEnabled) {
+        comboEffects.push(new ComboBurst(x, y, player.comboCount, multiplier, comboColor));
+        if (comboEffects.length > effectConfig.maxEffects) {
+            comboEffects.splice(0, comboEffects.length - effectConfig.maxEffects);
+        }
+    }
+
+    if (multiplier >= 2 && effectConfig.edgeEnabled) {
+        const milestoneBoost = player.comboCount % COMBO_STEP === 0 ? 0.34 : 0;
+        comboEdgePulse = Math.min(1, Math.max(comboEdgePulse, 0.20 + Math.min(multiplier, 12) * 0.055 + milestoneBoost));
+        comboEdgeColor = comboColor;
+    }
+
+    player.score += gainedScore;
+    syncDuelTotalScore();
+    return gainedScore;
 }
 
 function updateComboTimers(delta) {
@@ -1485,7 +1595,7 @@ function isAdaptiveEnabled() {
 
 function startAdaptiveSession() {
     adaptiveSession = createAdaptiveSession();
-    adaptiveSession.enabled = isAdaptiveEnabled();
+    adaptiveSession.enabled = isAdaptiveEnabled() && !isDuelMode();
     adaptiveSession.phase = adaptiveSession.enabled ? "calibrating" : "playing";
     adaptiveSession.baseSensitivity = Number(getSettingsState().sensitivity) || 1;
     adaptiveSession.previousRound = adaptiveProfile.lastRound;
@@ -1772,6 +1882,35 @@ function compareAdaptiveRounds(current, previous) {
 
 function getAdaptiveReport() {
     if (adaptiveSession.report) return adaptiveSession.report;
+    if (!adaptiveSession.enabled) {
+        adaptiveSession.report = {
+            roundIndex: adaptiveSession.roundIndex,
+            coveragePercent: 0,
+            coverageWidth: 0,
+            coverageHeight: 0,
+            hitRate: 0,
+            fatigueTrendText: "-",
+            fatigueStart: 0,
+            fatigueEnd: 0,
+            avgSpeed: 0,
+            hardestLabel: "-",
+            hardestRow: 1,
+            hardestCol: 1,
+            roundScore: 0,
+            currentScale: 1,
+            nextScale: 1,
+            adjustmentReason: "\u5bf9\u6218\u6a21\u5f0f\u4e0d\u5199\u5165\u5355\u4eba\u7075\u654f\u5ea6\u5b66\u4e60\u3002",
+            previousRound: null,
+            comparison: { label: "-", scoreDelta: 0, detail: "" },
+            calibrationSummary: "",
+            recommendation: "",
+            grid: adaptiveSession.grid.map((row) => row.map((cell) => Object.assign({}, cell))),
+            hitPoints: [],
+            missPoints: [],
+            comfortRect: Object.assign({}, adaptiveSession.comfortRect),
+        };
+        return adaptiveSession.report;
+    }
 
     const samples = adaptiveSession.samples;
     const bounds = getBoundsFromPoints(samples);
@@ -2400,6 +2539,41 @@ function drawTimeStopHud() {
     }
 }
 
+function drawDuelHud() {
+    const p1 = getDuelPlayer(0);
+    const p2 = getDuelPlayer(1);
+    drawText(`P1 ${p1.score}`, 164, 82, 30, getDuelBladeColor(0), "left");
+    drawText(`P2 ${p2.score}`, W - 44, 82, 30, getDuelBladeColor(1), "right");
+    drawText(`TIME ${Math.max(0, Math.ceil(remainingTime))}s`, W / 2, 45, 24, UI_THEME.violet, "center");
+
+    const leadText = p1.score === p2.score ? "EVEN" : p1.score > p2.score ? "P1 LEADS" : "P2 LEADS";
+    const leadColor = p1.score === p2.score ? UI_THEME.muted : p1.score > p2.score ? getDuelBladeColor(0) : getDuelBladeColor(1);
+    drawText(leadText, W / 2, 74, 18, leadColor, "center");
+}
+
+function drawDuelGameoverSummary() {
+    const p1 = getDuelPlayer(0);
+    const p2 = getDuelPlayer(1);
+    const winnerIndex = p1.score === p2.score ? -1 : p1.score > p2.score ? 0 : 1;
+    const title = winnerIndex === -1 ? "DRAW" : `P${winnerIndex + 1} WINS`;
+    const titleColor = winnerIndex === -1 ? UI_THEME.gold : getDuelBladeColor(winnerIndex);
+    drawDisplayText(title, W / 2, 132, 42, titleColor);
+
+    const cardY = 230;
+    const cardW = 270;
+    const cardH = 124;
+    [p1, p2].forEach((player, index) => {
+        const cx = index === 0 ? W / 2 - 165 : W / 2 + 165;
+        const color = getDuelBladeColor(index);
+        drawRoundedRect(cx - cardW / 2, cardY - cardH / 2, cardW, cardH, 18, UI_THEME.panel, winnerIndex === index ? color : UI_THEME.stroke);
+        drawText(`P${index + 1}`, cx, cardY - 30, 24, color);
+        drawText(String(player.score), cx, cardY + 8, 42, color);
+        drawText(`BEST COMBO ${player.bestCombo}`, cx, cardY + 46, 17, UI_THEME.muted);
+    });
+
+    drawText(`TOTAL ${score}`, W / 2, 390, 22, UI_THEME.ink);
+}
+
 function drawBackground() {
     if (gameState === GAME.PLAYING) {
         drawGameBackdrop();
@@ -2420,25 +2594,30 @@ function hexToRgb(hex) {
     return `${parseInt(h.substring(0,2),16)}, ${parseInt(h.substring(2,4),16)}, ${parseInt(h.substring(4,6),16)}`;
 }
 
-function drawTrail() {
-    if (trail.length < 2) return;
+function drawTrailPath(points, color) {
+    if (!points || points.length < 2) return;
     ctx.save();
     ctx.lineCap = "round";
-    
-    // 获取当前装备的刀刃颜色
-    const rgbStr = hexToRgb(currentColor);
+    const rgbStr = hexToRgb(color);
 
-    for (let i = 1; i < trail.length; i += 1) {
-        const alpha = i / trail.length;
-        // 注入当前颜色并保留原有的渐隐透明度效果
+    for (let i = 1; i < points.length; i += 1) {
+        const alpha = i / points.length;
         ctx.strokeStyle = `rgba(${rgbStr}, ${0.18 + alpha * 0.82})`; 
         ctx.lineWidth = 3 + alpha * 10;
         ctx.beginPath();
-        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
-        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.moveTo(points[i - 1].x, points[i - 1].y);
+        ctx.lineTo(points[i].x, points[i].y);
         ctx.stroke();
     }
     ctx.restore();
+}
+
+function drawTrail() {
+    if (isDuelMode()) {
+        playerTrails.forEach((points, index) => drawTrailPath(points, getDuelBladeColor(index)));
+        return;
+    }
+    drawTrailPath(trail, currentColor);
 }
 
 function drawAdaptiveCalibrationOverlay(input) {
@@ -2678,6 +2857,137 @@ function checkSlicePerfect(center, radius, start, end) {
     const projX = start.x + t * dx;
     const projY = start.y + t * dy;
     return distance(center.x, center.y, projX, projY) <= radius + 10;
+}
+
+function updateSliceTrails(input) {
+    const maxTrailPoints = 14;
+    if (isDuelMode()) {
+        const seenPlayers = new Set();
+        const blades = Array.isArray(input.blades) ? input.blades.slice(0, DUEL_PLAYER_COUNT) : [];
+        blades.forEach((blade, fallbackIndex) => {
+            const playerIndex = Number.isFinite(blade.playerIndex) ? clamp(blade.playerIndex, 0, DUEL_PLAYER_COUNT - 1) : fallbackIndex;
+            seenPlayers.add(playerIndex);
+            if (!playerTrails[playerIndex]) {
+                playerTrails[playerIndex] = [];
+            }
+            playerTrails[playerIndex].push({ x: blade.x, y: blade.y });
+            if (playerTrails[playerIndex].length > maxTrailPoints) {
+                playerTrails[playerIndex].shift();
+            }
+        });
+        for (let index = 0; index < DUEL_PLAYER_COUNT; index += 1) {
+            if (!seenPlayers.has(index)) {
+                playerTrails[index] = [];
+            }
+        }
+        return;
+    }
+
+    trail.push({ x: input.x, y: input.y });
+    if (trail.length > maxTrailPoints) {
+        trail.shift();
+    }
+}
+
+function findFruitSliceHit(fruit) {
+    const tracks = isDuelMode()
+        ? playerTrails.map((points, playerIndex) => ({ points, playerIndex }))
+        : [{ points: trail, playerIndex: 0 }];
+
+    for (const track of tracks) {
+        if (!track.points || track.points.length < 2) {
+            continue;
+        }
+        for (let i = 1; i < track.points.length; i += 1) {
+            if (checkSlicePerfect({ x: fruit.x, y: fruit.y }, fruit.r, track.points[i - 1], track.points[i])) {
+                return { playerIndex: track.playerIndex };
+            }
+        }
+    }
+    return null;
+}
+
+function addFruitSliceEffects(fruit) {
+    const palette = getFruitPalette(fruit.type);
+    splats.push(new SplatJuice(fruit.x, fruit.y, palette.flesh));
+    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "left"));
+    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "right"));
+    for (let j = 0; j < 12; j += 1) {
+        particles.push(new Particle(fruit.x, fruit.y, palette.skin));
+    }
+}
+
+function playFruitHitSound(fruit) {
+    if (!window.playSound) {
+        return;
+    }
+    if (fruit.type === "bomb") {
+        if (window.playBomb) window.playBomb();
+    } else if (window.playHit) {
+        window.playHit();
+    }
+}
+
+function handleFruitSlice(fruit, playerIndex = 0) {
+    fruit.alive = false;
+    playFruitHitSound(fruit);
+
+    if (fruit.type === "bomb") {
+        recordAdaptiveFruitResult(fruit, "bomb");
+        if (isDuelMode()) {
+            resetDuelCombo(playerIndex);
+            resetCombo();
+            const player = getDuelPlayer(playerIndex);
+            player.score = Math.max(0, player.score - DUEL_BOMB_PENALTY);
+            syncDuelTotalScore();
+            return;
+        }
+
+        resetCombo();
+        if (chosenMode === MODES.classic) {
+            getAdaptiveReport();
+            gameState = GAME.GAMEOVER;
+            if (window.playGameOver) window.playGameOver();
+        } else if (chosenMode === MODES.arcade) {
+            score = Math.max(0, score - DUEL_BOMB_PENALTY);
+        }
+        return;
+    }
+
+    recordAdaptiveFruitResult(fruit, "hit");
+    if (isDuelMode()) {
+        registerDuelHit(playerIndex, fruit.x, fruit.y);
+    } else {
+        score += registerComboHit(fruit.x, fruit.y);
+    }
+    money += 1;
+    saveShopData();
+    addFruitSliceEffects(fruit);
+}
+
+function handleFruitMiss(fruit) {
+    fruit.alive = false;
+    if (fruit.type === "bomb") {
+        return;
+    }
+
+    recordAdaptiveFruitResult(fruit, "miss");
+    if (isDuelMode()) {
+        resetAllDuelCombos();
+        resetCombo();
+        return;
+    }
+
+    resetCombo();
+    if (chosenMode === MODES.classic) {
+        lives -= 1;
+        if (window.playMiss) window.playMiss();
+        if (lives <= 0) {
+            getAdaptiveReport();
+            gameState = GAME.GAMEOVER;
+            if (window.playGameOver) window.playGameOver();
+        }
+    }
 }
 
 class Fruit {
@@ -3063,7 +3373,11 @@ class SplatJuice {
 }
 
 function resetGame(mode) {
-    normalizeCarriedItem();
+    if (isDuelMode(mode)) {
+        carriedItem = CARRY_ITEM.NONE;
+    } else {
+        normalizeCarriedItem();
+    }
     chosenMode = mode;
     score = 0;
     lives = 3;
@@ -3075,6 +3389,7 @@ function resetGame(mode) {
     clearScreenFlash = 0;
     clearScreenPulse = 0;
     trail = [];
+    resetDuelState();
     menuHold = menuItems.map(() => 0);
     resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
@@ -3095,6 +3410,8 @@ function resetGame(mode) {
         remainingTime = 90;
     } else if (mode === MODES.arcade) {
         remainingTime = 60;
+    } else if (isDuelMode(mode)) {
+        remainingTime = DUEL_DURATION_SECONDS;
     } else {
         remainingTime = 0;
     }
@@ -3116,6 +3433,7 @@ function returnToMenu() {
     clearScreenFlash = 0;
     clearScreenPulse = 0;
     trail = [];
+    resetDuelState();
     menuHold = menuItems.map(() => 0);
     resetLoadoutHold();
     gameoverHold = gameoverItems.map(() => 0);
@@ -3161,6 +3479,7 @@ function syncBgmForScene() {
 
 function getInputPosition() {
     const cameraActive = window.handTracked && window.cameraReady;
+    const handPointers = cameraActive && Array.isArray(window.handPointers) ? window.handPointers : [];
     // active when camera active or mouse recently moved or already using mouse
     const active = cameraActive || mouseMovedRecently || usingMouse;
 
@@ -3170,7 +3489,11 @@ function getInputPosition() {
     // - Else if already usingMouse -> keep following mouse
     // - Else -> keep current pointer (do not jump to mouse)
     let targetX, targetY;
-    if (cameraActive) {
+    if (cameraActive && handPointers[0]) {
+        targetX = clamp(handPointers[0].x, 0, W);
+        targetY = clamp(handPointers[0].y, 0, H);
+        usingMouse = false;
+    } else if (cameraActive) {
         targetX = clamp(window.handX, 0, W);
         targetY = clamp(window.handY, 0, H);
         usingMouse = false;
@@ -3200,6 +3523,22 @@ function getInputPosition() {
     pointerY = pointerY + (targetY - pointerY) * alpha;
 
     lastInputWasHand = cameraActive;
+    const handBlades = handPointers.slice(0, DUEL_PLAYER_COUNT).map((point, index) => ({
+        x: clamp(point.x, 0, W),
+        y: clamp(point.y, 0, H),
+        hand: true,
+        fist: Boolean(point.fist),
+        openHand: Boolean(point.openHand),
+        playerIndex: index,
+    }));
+    const fallbackBlade = {
+        x: pointerX,
+        y: pointerY,
+        hand: cameraActive,
+        fist: Boolean(window.isFist && cameraActive),
+        openHand: Boolean((window.isOpenHand || window.isOpenPalm) && cameraActive),
+        playerIndex: 0,
+    };
 
     return {
         x: pointerX,
@@ -3208,6 +3547,7 @@ function getInputPosition() {
         hand: cameraActive,
         fist: Boolean(window.isFist && cameraActive),
         openHand: Boolean((window.isOpenHand || window.isOpenPalm) && cameraActive),
+        blades: handBlades.length ? handBlades : active ? [fallbackBlade] : [],
     };
 }
 
@@ -3227,11 +3567,33 @@ function getHoveredIndex(items, px, py, radius) {
 }
 
 function spawnFruit(step) {
-    const chance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : 0.055;
+    const chance = chosenMode === MODES.classic ? 0.05 : chosenMode === MODES.zen ? 0.045 : isDuelMode() ? 0.068 : 0.055;
     if (Math.random() < chance * step) {
         const fruit = new Fruit(chosenMode);
         fruits.push(fruit);
         recordAdaptiveSpawn(fruit);
+    }
+}
+
+function activateMenuItem(selected) {
+    if (!selected) {
+        return;
+    }
+    if (selected.mode === "settings") {
+        gameState = GAME.SETTINGS;
+        resetSettingsHold();
+        settingsSliderDragging = false;
+        settingsSliderDragSource = null;
+        settingsLatchedIndex = -1;
+    } else if (selected.mode === "dojo") {
+        gameState = GAME.DOJO;
+        resetDojoHold();
+        syncBgmForScene();
+    } else if (selected.mode === "shop") {
+        enterShop();
+    } else {
+        normalizeCarriedItem();
+        resetGame(selected.mode);
     }
 }
 
@@ -3267,26 +3629,7 @@ function updateMenu(delta, input) {
     });
 
     if (trigger) {
-        if (trigger.mode === "settings") {
-            gameState = GAME.SETTINGS;
-            resetSettingsHold();
-            settingsSliderDragging = false;
-            settingsSliderDragSource = null;
-            settingsLatchedIndex = -1;
-        } else if (trigger.mode === "dojo") {
-            gameState = GAME.DOJO;
-            resetDojoHold();
-            syncBgmForScene();
-        } else if (trigger.mode === "dojo") {
-            gameState = GAME.DOJO;
-            resetDojoHold();
-            syncBgmForScene();
-        } else if (trigger.mode === "shop") { 
-            enterShop();
-        } else { 
-            normalizeCarriedItem();
-            resetGame(trigger.mode);
-        }
+        activateMenuItem(trigger);
     }
 }
 
@@ -3521,10 +3864,7 @@ function updatePlaying(delta, input) {
     updateAdaptiveSession(delta, input);
     updateEmotionSession(delta);
 
-    trail.push({ x: input.x, y: input.y });
-    if (trail.length > 14) {
-        trail.shift();
-    }
+    updateSliceTrails(input);
 
     if (adaptiveSession.enabled && adaptiveSession.phase === "calibrating") {
         drawTrail();
@@ -3537,11 +3877,16 @@ function updatePlaying(delta, input) {
     const comboDelta = timeStopped ? delta * 0.12 : delta;
 
     updateComboTimers(comboDelta);
+    if (isDuelMode()) {
+        updateDuelComboTimers(comboDelta);
+    }
 
-    if (!timeStopped && (chosenMode === MODES.zen || chosenMode === MODES.arcade)) {
+    if (!timeStopped && isTimedMode()) {
         remainingTime -= delta / 1000;
         if (remainingTime <= 0) {
-            getAdaptiveReport();
+            if (!isDuelMode()) {
+                getAdaptiveReport();
+            }
             gameState = GAME.GAMEOVER;
             if (window.playGameOver) window.playGameOver();
             return;
@@ -3559,64 +3904,13 @@ function updatePlaying(delta, input) {
             return;
         }
 
-        for (let i = 1; i < trail.length; i += 1) {
-            if (checkSlicePerfect({ x: fruit.x, y: fruit.y }, fruit.r, trail[i - 1], trail[i])) {
-                fruit.alive = false;
-                if (window.playSound) {
-                    if (fruit.type === "bomb") {
-                        if (window.playBomb) window.playBomb();
-                    } else {
-                        if (window.playHit) window.playHit();
-                    }
-                }
-
-                if (fruit.type === "bomb") {
-                    recordAdaptiveFruitResult(fruit, "bomb");
-                    resetCombo();
-                    if (chosenMode === MODES.classic) {
-                        getAdaptiveReport();
-                        gameState = GAME.GAMEOVER;
-                        if (window.playGameOver) window.playGameOver();
-                    } else if (chosenMode === MODES.arcade) {
-                        score = Math.max(0, score - 20);
-                    }
-                } else {
-                    recordAdaptiveFruitResult(fruit, "hit");
-                    score += registerComboHit(fruit.x, fruit.y);
-                    money += 1;
-                    saveShopData();
-                    const palette = {
-                        apple: { flesh: "rgba(255, 128, 128, 0.95)", skin: "rgba(255, 77, 77, 0.95)" },
-                        orange: { flesh: "rgba(255, 214, 150, 0.95)", skin: "rgba(255, 159, 28, 0.95)" },
-                        banana: { flesh: "rgba(255, 245, 176, 0.95)", skin: "rgba(255, 224, 102, 0.95)" },
-                        watermelon: { flesh: "rgba(255, 115, 131, 0.95)", skin: "rgba(76, 175, 80, 0.95)" },
-                    }[fruit.type];
-                    splats.push(new SplatJuice(fruit.x, fruit.y, palette.flesh));
-                    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "left"));
-                    slices.push(new HalfFruitSlice(fruit.x, fruit.y, fruit.vx, fruit.vy, fruit.type, "right"));
-                    for (let j = 0; j < 12; j += 1) {
-                        particles.push(new Particle(fruit.x, fruit.y, palette.skin));
-                    }
-                }
-                break;
-            }
+        const sliceHit = findFruitSliceHit(fruit);
+        if (sliceHit) {
+            handleFruitSlice(fruit, sliceHit.playerIndex);
         }
 
         if (fruit.alive && fruit.y > H + 60 && fruit.vy > 0) {
-            fruit.alive = false;
-            if (fruit.type !== "bomb") {
-                recordAdaptiveFruitResult(fruit, "miss");
-                resetCombo();
-                if (chosenMode === MODES.classic) {
-                    lives -= 1;
-                    if (window.playMiss) window.playMiss();
-                    if (lives <= 0) {
-                        getAdaptiveReport();
-                        gameState = GAME.GAMEOVER;
-                        if (window.playGameOver) window.playGameOver();
-                    }
-                }
-            }
+            handleFruitMiss(fruit);
         }
     });
 
@@ -3643,33 +3937,43 @@ function updatePlaying(delta, input) {
     drawComboEdgeEffect();
     drawOpenHandClearIndicator(input);
 
-    drawText(`分数 ${score}`, 80, 80, 30, UI_THEME.ink, "left");
-    drawText(`金币 ${money}`, W / 2, 45, 24, UI_THEME.gold, "center");
-    drawCarriedItemHud(clearButtonHovered);
-    drawComboHud();
-    drawTimeStopHud();
-    if (chosenMode === MODES.classic) {
-        drawText(`生命 ${Math.max(0, lives)}`, W - 120, 80, 30, lives === 1 ? UI_THEME.danger : UI_THEME.jade, "right");
+    if (isDuelMode()) {
+        drawDuelHud();
+        drawComboHud();
     } else {
-        drawText(`时间 ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? UI_THEME.blue : UI_THEME.violet, "right");
+        drawText(`分数 ${score}`, 80, 80, 30, UI_THEME.ink, "left");
+        drawText(`金币 ${money}`, W / 2, 45, 24, UI_THEME.gold, "center");
+        drawCarriedItemHud(clearButtonHovered);
+        drawComboHud();
+        drawTimeStopHud();
+        if (chosenMode === MODES.classic) {
+            drawText(`生命 ${Math.max(0, lives)}`, W - 120, 80, 30, lives === 1 ? UI_THEME.danger : UI_THEME.jade, "right");
+        } else {
+            drawText(`时间 ${Math.max(0, Math.ceil(remainingTime))}s`, W - 120, 80, 30, chosenMode === MODES.zen ? UI_THEME.blue : UI_THEME.violet, "right");
+        }
     }
 }
 
 function updateGameover(delta, input) {
+    const duelMode = isDuelMode();
     const bestMultiplier = getComboMultiplierForCount(bestCombo);
     const bestComboColor = getComboColor(bestCombo);
-    const report = getAdaptiveReport();
-    const emotionReport = getEmotionReport();
+    const report = duelMode ? null : getAdaptiveReport();
+    const emotionReport = duelMode ? null : getEmotionReport();
 
     drawRoundedRect(40, 30, W - 80, H - 58, 26, "rgba(255,255,255,0.64)", UI_THEME.stroke);
-    drawDisplayText(chosenMode === MODES.zen || chosenMode === MODES.arcade ? "时间到" : "游戏结束", W / 2, 76, 40, UI_THEME.danger);
-    drawText(`最终分数 ${score}`, W / 2 - 36, 122, 22, UI_THEME.ink, "right");
-    drawText(`最佳连击 ${bestCombo}   x${bestMultiplier}`, W / 2 + 30, 122, 19, bestComboColor, "left");
-    drawGameoverReportTabs(delta, input);
-    if (gameoverReportPage === "emotion") {
-        drawEmotionReport(emotionReport);
+    drawDisplayText(duelMode ? "\u5bf9\u6218\u7ed3\u675f" : chosenMode === MODES.zen || chosenMode === MODES.arcade ? "时间到" : "游戏结束", W / 2, 76, 40, UI_THEME.danger);
+    if (duelMode) {
+        drawDuelGameoverSummary();
     } else {
-        drawAdaptiveReport(report);
+        drawText(`最终分数 ${score}`, W / 2 - 36, 122, 22, UI_THEME.ink, "right");
+        drawText(`最佳连击 ${bestCombo}   x${bestMultiplier}`, W / 2 + 30, 122, 19, bestComboColor, "left");
+        drawGameoverReportTabs(delta, input);
+        if (gameoverReportPage === "emotion") {
+            drawEmotionReport(emotionReport);
+        } else {
+            drawAdaptiveReport(report);
+        }
     }
 
     let trigger = null;
@@ -3789,27 +4093,7 @@ canvas.addEventListener("pointerdown", (event) => {
 
         const idx = getMenuItemIndexAt(x, y);
         if (idx !== -1) {
-            const selected = menuItems[idx];
-            if (selected.mode === "settings") {
-                gameState = GAME.SETTINGS;
-                resetSettingsHold();
-                settingsSliderDragging = false;
-                settingsSliderDragSource = null;
-                settingsLatchedIndex = -1;
-            } else if (selected.mode === "dojo") {
-                gameState = GAME.DOJO;
-                resetDojoHold();
-                syncBgmForScene();
-            } else if (selected.mode === "dojo") {
-                gameState = GAME.DOJO;
-                resetDojoHold();
-                syncBgmForScene();
-            } 
-            else if (selected.mode === "shop") { 
-                enterShop();
-            }else {
-                resetGame(selected.mode);
-            }
+            activateMenuItem(menuItems[idx]);
             return;
         }
     } else if (gameState === GAME.SETTINGS) {
