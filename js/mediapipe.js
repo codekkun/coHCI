@@ -22,6 +22,14 @@ window.faceSampleUpdatedAt = 0;
 let lostHandFrames = 0;
 const MAX_HAND_POINTERS = 2;
 const SNAP_EVENT_TTL_MS = 450;
+const SNAP_MIN_GROWTH_MS = 150;
+const SNAP_MAX_GROWTH_MS = 300;
+const SNAP_HISTORY_TTL_MS = SNAP_MAX_GROWTH_MS + 80;
+const SNAP_CLOSE_DISTANCE_RATIO = 0.42;
+const SNAP_OPEN_DISTANCE_RATIO = 0.76;
+const SNAP_MIN_DISTANCE_GROWTH = 0.32;
+const SNAP_MIN_GROWTH_VELOCITY = 1.25;
+const SNAP_COOLDOWN_MS = 1500;
 const snapStates = Array.from({ length: MAX_HAND_POINTERS }, () => createSnapState());
 const FIST_THRESHOLD = 0.13;
 const FACE_SAMPLE_INTERVAL_MS = 360;
@@ -166,22 +174,14 @@ function landmarkDistance(a, b) {
 function createSnapState() {
     return {
         primed: false,
-        primedAt: 0,
-        closeStableSince: 0,
-        closePoseValid: false,
-        closeDistance: Infinity,
-        lastDistance: Infinity,
-        lastTime: 0,
+        distanceHistory: [],
         cooldownUntil: 0,
     };
 }
 
 function resetSnapState(state) {
     state.primed = false;
-    state.primedAt = 0;
-    state.closeStableSince = 0;
-    state.closePoseValid = false;
-    state.closeDistance = Infinity;
+    state.distanceHistory = [];
 }
 
 function resetAllSnapStates() {
@@ -192,16 +192,6 @@ function expireSnapTrigger(now) {
     if (window.snapTriggered && now - (Number(window.snapTriggeredAt) || 0) > SNAP_EVENT_TTL_MS) {
         window.snapTriggered = false;
     }
-}
-
-function isFingerExtended(landmarks, finger, palmScale, wrist) {
-    const tip = landmarks[finger.tip];
-    const pip = landmarks[finger.pip];
-    const mcp = landmarks[finger.mcp];
-    return (
-        landmarkDistance(tip, wrist) > landmarkDistance(pip, wrist) + palmScale * 0.10 &&
-        landmarkDistance(tip, mcp) > palmScale * 0.54
-    );
 }
 
 function analyzeOpenHand(landmarks) {
@@ -259,41 +249,7 @@ function analyzeOpenHand(landmarks) {
 function getPalmScale(landmarks) {
     const wrist = landmarks[0];
     const middleBase = landmarks[9];
-    const indexBase = landmarks[5];
-    const pinkyBase = landmarks[17];
-    const palmHeight = Math.hypot(wrist.x - middleBase.x, wrist.y - middleBase.y);
-    const palmWidth = Math.hypot(indexBase.x - pinkyBase.x, indexBase.y - pinkyBase.y);
-    return Math.max(0.08, palmHeight, palmWidth);
-}
-
-function analyzeSnapIntent(landmarks, palmScale, distanceRatio, openHandState) {
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-    const indexTip = landmarks[8];
-    const middleTip = landmarks[12];
-    const ringTip = landmarks[16];
-    const indexExtended = isFingerExtended(landmarks, { tip: 8, pip: 6, mcp: 5 }, palmScale, wrist);
-    const thumbIndexRatio = landmarkDistance(thumbTip, indexTip) / palmScale;
-    const thumbRingRatio = landmarkDistance(thumbTip, ringTip) / palmScale;
-    const middleCurlRatio = landmarkDistance(middleTip, landmarks[9]) / palmScale;
-    const middleIsPrimary =
-        distanceRatio < thumbIndexRatio * 0.86 &&
-        distanceRatio < thumbRingRatio + 0.10;
-    const middleBentEnough = middleCurlRatio < 0.86 || landmarkDistance(middleTip, landmarks[10]) < palmScale * 0.34;
-    const notWideOpen = !openHandState || (openHandState.extendedCount <= 3 && !openHandState.isOpenHand);
-
-    return {
-        canPrime:
-            notWideOpen &&
-            indexExtended &&
-            middleIsPrimary &&
-            middleBentEnough &&
-            thumbIndexRatio > 0.40,
-        canRelease:
-            notWideOpen &&
-            indexExtended &&
-            thumbIndexRatio > 0.38,
-    };
+    return Math.max(0.04, landmarkDistance(wrist, middleBase));
 }
 
 function updateSnapState(landmarks, width, height, normCoord, openHandState, state, handIndex) {
@@ -303,7 +259,6 @@ function updateSnapState(landmarks, width, height, normCoord, openHandState, sta
     const middleTip = landmarks[12];
     const palmScale = getPalmScale(landmarks);
     const distanceRatio = landmarkDistance(thumbTip, middleTip) / palmScale;
-    const snapIntent = analyzeSnapIntent(landmarks, palmScale, distanceRatio, openHandState);
     const stableOpenHand = Boolean(openHandState && (openHandState.isOpenHand || openHandState.extendedCount >= 4));
     const snapBlocked =
         now < state.cooldownUntil ||
@@ -311,57 +266,52 @@ function updateSnapState(landmarks, width, height, normCoord, openHandState, sta
 
     if (snapBlocked || (stableOpenHand && !state.primed)) {
         resetSnapState(state);
-        state.lastDistance = distanceRatio;
-        state.lastTime = now;
         return;
     }
 
-    const closeThreshold = 0.38;
-    const openThreshold = 0.78;
-    const minSeparation = 0.36;
-    const minVelocity = 2.35;
-    const minClosedMs = 55;
-    const maxSnapMs = 430;
-
-    if (distanceRatio < closeThreshold && snapIntent.canPrime) {
-        if (!state.primed) {
-            state.primed = true;
-            state.primedAt = now;
-            state.closeStableSince = now;
-            state.closePoseValid = true;
-            state.closeDistance = distanceRatio;
-        } else {
-            state.closeDistance = Math.min(state.closeDistance, distanceRatio);
-            state.closePoseValid = state.closePoseValid && snapIntent.canPrime;
-        }
-    } else if (state.primed) {
-        const elapsed = now - state.primedAt;
-        const closedMs = state.closeStableSince ? now - state.closeStableSince : 0;
-        const frameSeconds = Math.max(0.016, (now - state.lastTime) / 1000);
-        const velocity = (distanceRatio - state.lastDistance) / frameSeconds;
-        const separatedEnough =
-            snapIntent.canRelease &&
-            distanceRatio > openThreshold &&
-            distanceRatio - state.closeDistance > minSeparation;
-        const timingLooksRight = closedMs >= minClosedMs && elapsed <= maxSnapMs;
-
-        if (state.closePoseValid && separatedEnough && timingLooksRight && velocity > minVelocity) {
-            const snapMidX = (thumbTip.x + middleTip.x) / 2;
-            const snapMidY = (thumbTip.y + middleTip.y) / 2;
-            window.snapTriggered = true;
-            window.snapTriggeredAt = now;
-            window.snapHandIndex = handIndex;
-            window.snapX = (1 - normCoord(snapMidX)) * width;
-            window.snapY = normCoord(snapMidY) * height;
-            state.cooldownUntil = now + 1500;
-            resetSnapState(state);
-        } else if (elapsed > 560 || distanceRatio > 1.20 || stableOpenHand || (distanceRatio < closeThreshold && !snapIntent.canPrime)) {
-            resetSnapState(state);
-        }
+    state.distanceHistory.push({ time: now, distanceRatio });
+    while (state.distanceHistory.length && now - state.distanceHistory[0].time > SNAP_HISTORY_TTL_MS) {
+        state.distanceHistory.shift();
     }
 
-    state.lastDistance = distanceRatio;
-    state.lastTime = now;
+    state.primed = state.distanceHistory.some((sample) => sample.distanceRatio <= SNAP_CLOSE_DISTANCE_RATIO);
+
+    let closeSample = null;
+    state.distanceHistory.forEach((sample) => {
+        const elapsed = now - sample.time;
+        if (
+            elapsed >= SNAP_MIN_GROWTH_MS &&
+            elapsed <= SNAP_MAX_GROWTH_MS &&
+            sample.distanceRatio <= SNAP_CLOSE_DISTANCE_RATIO &&
+            (!closeSample || sample.distanceRatio < closeSample.distanceRatio)
+        ) {
+            closeSample = sample;
+        }
+    });
+
+    if (!closeSample) {
+        return;
+    }
+
+    const elapsed = now - closeSample.time;
+    const distanceGrowth = distanceRatio - closeSample.distanceRatio;
+    const growthVelocity = distanceGrowth / Math.max(0.001, elapsed / 1000);
+
+    if (
+        distanceRatio >= SNAP_OPEN_DISTANCE_RATIO &&
+        distanceGrowth >= SNAP_MIN_DISTANCE_GROWTH &&
+        growthVelocity >= SNAP_MIN_GROWTH_VELOCITY
+    ) {
+        const snapMidX = (thumbTip.x + middleTip.x) / 2;
+        const snapMidY = (thumbTip.y + middleTip.y) / 2;
+        window.snapTriggered = true;
+        window.snapTriggeredAt = now;
+        window.snapHandIndex = handIndex;
+        window.snapX = (1 - normCoord(snapMidX)) * width;
+        window.snapY = normCoord(snapMidY) * height;
+        state.cooldownUntil = now + SNAP_COOLDOWN_MS;
+        resetSnapState(state);
+    }
 }
 
 function updateHandState(results) {
@@ -390,7 +340,7 @@ function updateHandState(results) {
                 const openHandState = analyzeOpenHand(landmarks);
                 const snapState = snapStates[sourceIndex] || snapStates[0];
                 updateSnapState(landmarks, width, height, normCoord, openHandState, snapState, sourceIndex);
-                const localIsOpenHand = !localIsFist && !snapState.primed && openHandState.isOpenHand;
+                const localIsOpenHand = !localIsFist && !window.snapTriggered && !snapState.primed && openHandState.isOpenHand;
 
                 const nx = normCoord(indexTip.x);
                 const ny = normCoord(indexTip.y);
